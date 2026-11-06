@@ -64,3 +64,24 @@ export interface DriveSyncStatus {
   spreadsheetTitle?: string;
   error?: string;
 }
+
+export interface RecurringTemplate {
+  id: string;
+  type: TransactionType;
+  category: string;
+  description: string;
+  amount: number;
+  dayOfMonth: number; // 1 to 31 (clamped to target month's actual day count)
+  enabled: boolean;
+  notes?: string;
+}
+
+export interface FullAppBackupPayload {
+  version: number;
+  exportedAt: string;
+  app: string;
+  months: Record<string, MonthlyBudget>;
+  transactions: Transaction[];
+  recurringTemplates: RecurringTemplate[];
+}
+

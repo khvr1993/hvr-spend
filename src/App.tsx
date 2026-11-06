@@ -5,6 +5,8 @@ import {
   Transaction,
   MonthlySummary,
   TransactionType,
+  RecurringTemplate,
+  FullAppBackupPayload,
 } from './types';
 import {
   INITIAL_MONTH_ID,
@@ -17,12 +19,14 @@ import {
   calculateWeekNumber,
   getMonthIdFromDate,
   formatMonthIdToName,
+  formatINR,
   parseMonthIdFromDriveTitle,
   filterDuplicateTransactions,
   formatLocalYYYYMMDD,
   DEFAULT_EXPENSE_CATEGORIES,
   DEFAULT_INCOME_CATEGORIES,
 } from './utils/expenseCalculations';
+import { materializeRecurringTemplatesForMonth } from './utils/recurringAndBackup';
 import { createAutoSyncController } from './utils/autoSync';
 import {
   initAuth,
@@ -104,6 +108,19 @@ export default function App() {
     return [];
   });
 
+  // Recurring transaction templates (rent, paycheck, subscriptions)
+  const [recurringTemplates, setRecurringTemplates] = useState<RecurringTemplate[]>(() => {
+    const saved = localStorage.getItem('hvr_expense_recurring_v1');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error('Failed to parse recurring templates:', e);
+      }
+    }
+    return [];
+  });
+
   // Auth & Drive
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
@@ -121,6 +138,7 @@ export default function App() {
   const [isNewMonthModalOpen, setIsNewMonthModalOpen] = useState(false);
   const [newMonthInput, setNewMonthInput] = useState('2026-12');
   const [newMonthStartBalance, setNewMonthStartBalance] = useState('0');
+  const [selectedNewMonthRecurringIds, setSelectedNewMonthRecurringIds] = useState<string[]>([]);
 
   // Quick Add Modal state (from header button)
   const [quickAddType, setQuickAddType] = useState<TransactionType>('expense');
@@ -205,6 +223,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('hvr_expense_transactions_clean_v1', JSON.stringify(transactions));
   }, [transactions]);
+
+  useEffect(() => {
+    localStorage.setItem('hvr_expense_recurring_v1', JSON.stringify(recurringTemplates));
+  }, [recurringTemplates]);
 
   // Current active budget config (uses template if month not yet registered)
   const currentBudget = useMemo<MonthlyBudget>(() => {
@@ -501,18 +523,161 @@ export default function App() {
     return { ok: true };
   };
 
+  // Recurring template handlers
+  const handleAddRecurringTemplate = (tpl: Omit<RecurringTemplate, 'id'>) => {
+    const newTpl: RecurringTemplate = {
+      ...tpl,
+      id: `rec-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+    };
+    setRecurringTemplates((prev) => [...prev, newTpl]);
+  };
+
+  const handleToggleRecurringTemplate = (id: string) => {
+    setRecurringTemplates((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, enabled: !t.enabled } : t))
+    );
+  };
+
+  const handleDeleteRecurringTemplate = (id: string) => {
+    setRecurringTemplates((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  const handleSeedRecurringToMonth = (
+    monthId: string,
+    selectedIds?: string[]
+  ): { insertedCount: number; skippedCount: number } => {
+    ensureMonthBoardExists(monthId);
+    const existingInMonth = transactions.filter((t) => t.monthId === monthId);
+    const { toInsert, skippedExistingCount } = materializeRecurringTemplatesForMonth(
+      recurringTemplates,
+      monthId,
+      existingInMonth,
+      selectedIds
+    );
+    if (toInsert.length > 0) {
+      setTransactions((prev) => [...toInsert, ...prev]);
+    }
+    return { insertedCount: toInsert.length, skippedCount: skippedExistingCount };
+  };
+
+  // Full JSON Backup Restore handler (supports both 'merge' and 'replace' modes)
+  const handleRestoreBackup = (payload: FullAppBackupPayload, mode: 'merge' | 'replace') => {
+    // Save an automatic safety snapshot before restoring
+    try {
+      const existingBackups = Object.keys(localStorage)
+        .filter((k) => k.startsWith('hvr_expense_backup_'))
+        .sort();
+      while (existingBackups.length >= 3) {
+        const oldest = existingBackups.shift();
+        if (oldest) localStorage.removeItem(oldest);
+      }
+      const backupKey = `hvr_expense_backup_${Date.now()}`;
+      localStorage.setItem(
+        backupKey,
+        JSON.stringify({ months, transactions, recurringTemplates })
+      );
+    } catch {}
+
+    if (mode === 'replace') {
+      const nextMonths =
+        Object.keys(payload.months).length > 0
+          ? payload.months
+          : {
+              [INITIAL_MONTH_ID]: {
+                monthId: INITIAL_MONTH_ID,
+                monthName: INITIAL_MONTH_NAME,
+                startBalance: 0,
+                expenseBudgets: { ...INITIAL_EXPENSE_BUDGETS_NOV },
+                incomeBudgets: { ...INITIAL_INCOME_BUDGETS_NOV },
+              },
+            };
+      setMonths(nextMonths);
+      setTransactions(payload.transactions);
+      setRecurringTemplates(payload.recurringTemplates || []);
+      const sortedMonthIds = Object.keys(nextMonths).sort((a, b) => b.localeCompare(a));
+      if (sortedMonthIds[0]) {
+        setActiveMonthId(sortedMonthIds[0]);
+      }
+      return;
+    }
+
+    // Merge mode: combine month boards, deduplicate transactions per month, and merge recurring templates
+    setMonths((prev) => {
+      const merged = { ...prev };
+      for (const [mId, b] of Object.entries(payload.months)) {
+        if (!merged[mId]) {
+          merged[mId] = b;
+        } else {
+          merged[mId] = {
+            ...merged[mId],
+            expenseBudgets: { ...b.expenseBudgets, ...merged[mId].expenseBudgets },
+            incomeBudgets: { ...b.incomeBudgets, ...merged[mId].incomeBudgets },
+          };
+        }
+      }
+      return merged;
+    });
+
+    setTransactions((prev) => {
+      const { unique } = filterDuplicateTransactions(payload.transactions, prev);
+      return [...unique, ...prev];
+    });
+
+    if (payload.recurringTemplates && payload.recurringTemplates.length > 0) {
+      setRecurringTemplates((prev) => {
+        const existingKeys = new Set(
+          prev.map(
+            (r) => `${r.type}|${r.category.toLowerCase()}|${r.description.toLowerCase()}|${r.amount}`
+          )
+        );
+        const added = payload.recurringTemplates.filter(
+          (r) =>
+            !existingKeys.has(
+              `${r.type}|${r.category.toLowerCase()}|${r.description.toLowerCase()}|${r.amount}`
+            )
+        );
+        return [...prev, ...added];
+      });
+    }
+  };
+
   // Create a new month board explicitly
-  const handleCreateMonth = (monthId: string, startBalanceVal = 0) => {
+  const handleCreateMonth = (
+    monthId: string,
+    startBalanceVal = 0,
+    seedRecurringIds?: string[]
+  ) => {
     if (!/^\d{4}-\d{2}$/.test(monthId)) return;
     ensureMonthBoardExists(monthId, startBalanceVal);
+    if (seedRecurringIds && seedRecurringIds.length > 0) {
+      handleSeedRecurringToMonth(monthId, seedRecurringIds);
+    }
     setActiveMonthId(monthId);
   };
 
-  const handleNewMonthModalSubmit = (e: React.FormEvent) => {
+  const openNewMonthModal = (defaultMonthId?: string) => {
+    const sorted = Object.keys(months).sort((a, b) => b.localeCompare(a));
+    const latest = sorted[0] || INITIAL_MONTH_ID;
+    const [yr, mo] = latest.split('-').map(Number);
+    const nextYr = mo === 12 ? yr + 1 : yr;
+    const nextMo = mo === 12 ? 1 : mo + 1;
+    setNewMonthInput(defaultMonthId || `${nextYr}-${String(nextMo).padStart(2, '0')}`);
+    setNewMonthStartBalance('0');
+    setSelectedNewMonthRecurringIds(
+      recurringTemplates.filter((t) => t.enabled).map((t) => t.id)
+    );
+    setIsNewMonthModalOpen(true);
+  };
+
+  const handleNewMonthModalSubmit = (e: React.FormEvent, skipRecurring = false) => {
     e.preventDefault();
     if (!/^\d{4}-\d{2}$/.test(newMonthInput)) return;
     const bal = parseFloat(newMonthStartBalance) || 0;
-    handleCreateMonth(newMonthInput, bal);
+    handleCreateMonth(
+      newMonthInput,
+      bal,
+      skipRecurring ? [] : selectedNewMonthRecurringIds
+    );
     setIsNewMonthModalOpen(false);
     setActiveTab('summary');
   };
@@ -718,16 +883,7 @@ export default function App() {
                 {/* Create New Month Board Button */}
                 <button
                   type="button"
-                  onClick={() => {
-                    const sorted = Object.keys(months).sort((a, b) => b.localeCompare(a));
-                    const latest = sorted[0] || '2026-11';
-                    const [yr, mo] = latest.split('-').map(Number);
-                    const nextYr = mo === 12 ? yr + 1 : yr;
-                    const nextMo = mo === 12 ? 1 : mo + 1;
-                    setNewMonthInput(`${nextYr}-${String(nextMo).padStart(2, '0')}`);
-                    setNewMonthStartBalance('0');
-                    setIsNewMonthModalOpen(true);
-                  }}
+                  onClick={() => openNewMonthModal()}
                   className={`inline-flex items-center gap-1 px-2 sm:px-2.5 py-1.5 rounded-md text-xs font-medium border ${borderClass} ${subtleBtn} transition-colors cursor-pointer shrink-0`}
                   title="Create a new monthly board from template"
                 >
@@ -909,7 +1065,13 @@ export default function App() {
             incomeCategories={currentSummary.incomeCategoryTotals.map((c) => c.category)}
             onAddTransaction={handleAddTransaction}
             onSelectMonth={(mId) => setActiveMonthId(mId)}
-            onCreateMonth={(mId) => handleCreateMonth(mId, 0)}
+            onCreateMonth={(mId) => {
+              if (recurringTemplates.some((t) => t.enabled)) {
+                openNewMonthModal(mId);
+              } else {
+                handleCreateMonth(mId, 0);
+              }
+            }}
             onNavigateToTab={(tab) => setActiveTab(tab)}
             isDark={isDark}
           />
@@ -963,11 +1125,18 @@ export default function App() {
         {activeTab === 'category' && (
           <CategoryManagerView
             budget={currentBudget}
+            months={months}
             transactions={transactions}
+            recurringTemplates={recurringTemplates}
             resetTargetMonthName={INITIAL_MONTH_NAME}
             onUpdateBudget={handleUpdateBudget}
             onRenameCategory={handleRenameCategory}
             onDeleteCategory={handleDeleteCategory}
+            onAddRecurringTemplate={handleAddRecurringTemplate}
+            onToggleRecurringTemplate={handleToggleRecurringTemplate}
+            onDeleteRecurringTemplate={handleDeleteRecurringTemplate}
+            onSeedRecurringToMonth={handleSeedRecurringToMonth}
+            onRestoreBackup={handleRestoreBackup}
             onResetToDefaults={handleResetToDefaults}
             onResetCurrentMonthCategories={handleResetCurrentMonthCategories}
             isDark={isDark}
@@ -975,11 +1144,11 @@ export default function App() {
         )}
       </main>
 
-      {/* Create New Month Modal */}
+      {/* Create New Month Modal (with Recurring Transactions Confirm / Skip Step) */}
       {isNewMonthModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div
-            className={`border rounded-lg shadow-2xl max-w-sm w-full p-6 space-y-4 ${
+            className={`border rounded-lg shadow-2xl max-w-md w-full p-6 space-y-4 ${
               isDark ? 'bg-[#121214] border-[#262626] text-zinc-100' : 'bg-white border-[#E5E5E5] text-zinc-900'
             }`}
           >
@@ -996,47 +1165,114 @@ export default function App() {
               </button>
             </div>
 
-            <form onSubmit={handleNewMonthModalSubmit} className="space-y-4">
+            <form onSubmit={(e) => handleNewMonthModalSubmit(e, false)} className="space-y-4">
               <p className={`text-xs ${textMuted}`}>
                 Generates a fresh monthly board following your category template and planned limits.
               </p>
 
-              <div>
-                <label className={`block text-[11px] font-medium uppercase tracking-wider ${textSubtle} mb-1`}>
-                  Select Month (YYYY-MM)
-                </label>
-                <input
-                  type="month"
-                  required
-                  value={newMonthInput}
-                  onChange={(e) => setNewMonthInput(e.target.value)}
-                  className={`w-full px-3 py-2 rounded-md text-xs font-mono border ${borderClass} ${
-                    isDark ? 'bg-[#18181B]' : 'bg-[#F4F4F5]'
-                  } focus:outline-none focus:ring-1 focus:ring-amber-500`}
-                />
-                {newMonthInput && (
-                  <span className={`block text-[11px] font-mono ${textSubtle} mt-1`}>
-                    Board Title: <strong>{formatMonthIdToName(newMonthInput)}</strong>
-                  </span>
-                )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className={`block text-[11px] font-medium uppercase tracking-wider ${textSubtle} mb-1`}>
+                    Select Month (YYYY-MM)
+                  </label>
+                  <input
+                    type="month"
+                    required
+                    value={newMonthInput}
+                    onChange={(e) => setNewMonthInput(e.target.value)}
+                    className={`w-full px-3 py-2 rounded-md text-xs font-mono border ${borderClass} ${
+                      isDark ? 'bg-[#18181B]' : 'bg-[#F4F4F5]'
+                    } focus:outline-none focus:ring-1 focus:ring-amber-500`}
+                  />
+                </div>
+
+                <div>
+                  <label className={`block text-[11px] font-medium uppercase tracking-wider ${textSubtle} mb-1`}>
+                    Starting Balance (₹)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={newMonthStartBalance}
+                    onChange={(e) => setNewMonthStartBalance(e.target.value)}
+                    className={`w-full px-3 py-2 rounded-md text-xs font-mono border ${borderClass} ${
+                      isDark ? 'bg-[#18181B]' : 'bg-[#F4F4F5]'
+                    } focus:outline-none focus:ring-1 focus:ring-amber-500`}
+                  />
+                </div>
               </div>
 
-              <div>
-                <label className={`block text-[11px] font-medium uppercase tracking-wider ${textSubtle} mb-1`}>
-                  Starting Balance (₹)
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={newMonthStartBalance}
-                  onChange={(e) => setNewMonthStartBalance(e.target.value)}
-                  className={`w-full px-3 py-2 rounded-md text-xs font-mono border ${borderClass} ${
-                    isDark ? 'bg-[#18181B]' : 'bg-[#F4F4F5]'
-                  } focus:outline-none focus:ring-1 focus:ring-amber-500`}
-                />
-              </div>
+              {newMonthInput && (
+                <span className={`block text-[11px] font-mono ${textSubtle}`}>
+                  Board Title: <strong>{formatMonthIdToName(newMonthInput)}</strong>
+                </span>
+              )}
 
-              <div className={`flex items-center justify-end gap-2 pt-3 border-t ${borderClass}`}>
+              {/* Recurring Transactions Confirm / Skip Step */}
+              {recurringTemplates.some((t) => t.enabled) && (
+                <div className={`p-3 rounded-md border ${borderClass} ${isDark ? 'bg-[#18181B]' : 'bg-[#F4F4F5]'} space-y-2.5`}>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-medium">
+                      Seed Recurring Transactions ({selectedNewMonthRecurringIds.length}/{recurringTemplates.filter((t) => t.enabled).length})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const enabledIds = recurringTemplates.filter((t) => t.enabled).map((t) => t.id);
+                        if (selectedNewMonthRecurringIds.length === enabledIds.length) {
+                          setSelectedNewMonthRecurringIds([]);
+                        } else {
+                          setSelectedNewMonthRecurringIds(enabledIds);
+                        }
+                      }}
+                      className="text-[11px] font-mono text-amber-500 hover:underline cursor-pointer"
+                    >
+                      {selectedNewMonthRecurringIds.length === recurringTemplates.filter((t) => t.enabled).length
+                        ? 'Uncheck All'
+                        : 'Select All'}
+                    </button>
+                  </div>
+
+                  <div className={`max-h-36 overflow-y-auto divide-y ${borderClass} border ${borderClass} rounded bg-transparent`}>
+                    {recurringTemplates
+                      .filter((t) => t.enabled)
+                      .map((tpl) => {
+                        const checked = selectedNewMonthRecurringIds.includes(tpl.id);
+                        return (
+                          <label
+                            key={tpl.id}
+                            className="px-2.5 py-1.5 flex items-center justify-between gap-2 text-xs cursor-pointer"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => {
+                                  setSelectedNewMonthRecurringIds((prev) =>
+                                    prev.includes(tpl.id)
+                                      ? prev.filter((id) => id !== tpl.id)
+                                      : [...prev, tpl.id]
+                                  );
+                                }}
+                                className="accent-amber-500 w-3.5 h-3.5 cursor-pointer shrink-0"
+                              />
+                              <span className="truncate">{tpl.description}</span>
+                              <span className={`text-[10px] font-mono ${textSubtle} shrink-0`}>
+                                (Day {tpl.dayOfMonth})
+                              </span>
+                            </div>
+                            <span className="font-mono text-[11px] tabular-nums shrink-0">
+                              {tpl.type === 'income' ? '+' : '-'}
+                              {formatINR(tpl.amount)}
+                            </span>
+                          </label>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
+
+              <div className={`flex flex-wrap items-center justify-end gap-2 pt-3 border-t ${borderClass}`}>
                 <button
                   type="button"
                   onClick={() => setIsNewMonthModalOpen(false)}
@@ -1044,11 +1280,22 @@ export default function App() {
                 >
                   Cancel
                 </button>
+                {recurringTemplates.some((t) => t.enabled) && (
+                  <button
+                    type="button"
+                    onClick={(e) => handleNewMonthModalSubmit(e as unknown as React.FormEvent, true)}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium border ${borderClass} ${subtleBtn} cursor-pointer`}
+                  >
+                    Skip Recurring &amp; Create
+                  </button>
+                )}
                 <button
                   type="submit"
                   className="px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-medium rounded-md shadow-2xs cursor-pointer"
                 >
-                  Create &amp; Open Board
+                  {selectedNewMonthRecurringIds.length > 0
+                    ? `Create & Seed (${selectedNewMonthRecurringIds.length})`
+                    : 'Create & Open Board'}
                 </button>
               </div>
             </form>
