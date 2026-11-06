@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "vite build",
-    "build:pages": "vite build --outDir docs",
+    "build": "vite build && touch dist/.nojekyll && cp dist/index.html dist/404.html",
+    "build:pages": "vite build --outDir docs && touch docs/.nojekyll && cp docs/index.html docs/404.html",
+    "build:all": "npm run build && npm run build:pages",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
+    "clean": "rm -rf dist docs server.js",
     "lint": "tsc --noEmit",
     "test": "tsx --test src/utils/*.test.ts"
   },
@@ -27,7 +28,6 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
-    "esbuild": "^0.25.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",
