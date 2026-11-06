@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { User } from 'firebase/auth';
 import {
   googleSignIn,
-  googleSignInRedirect,
   logout,
   syncToGoogleDrive,
   generateExcelWorkbookBlob,
@@ -109,31 +108,23 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
       const code = String(err?.code || err?.message || '');
       if (
         code.includes('popup-closed-by-user') ||
+        code.includes('popup_closed_by_user') ||
         code.includes('popup-blocked') ||
-        code.includes('cancelled-popup-request')
+        code.includes('popup_failed_to_open') ||
+        code.includes('cancelled-popup-request') ||
+        code.includes('closed')
       ) {
         setIsPopupClosedError(true);
-        setAuthError('Google sign-in popup closed before completing authorization.');
-      } else if (code.includes('unauthorized-domain')) {
+        setAuthError('Google sign-in window closed before completing authorization.');
+      } else if (code.includes('unauthorized-domain') || code.includes('origin_mismatch') || code.includes('redirect_uri_mismatch')) {
         setIsPopupClosedError(true);
         setAuthError(
-          `Domain "${currentHostname}" is not yet added to Firebase Authorized Domains.`
+          `Origin "https://${currentHostname}" needs to be added to Authorized JavaScript origins in Google Cloud Console.`
         );
       } else {
         setAuthError(err?.message || 'Authentication error');
       }
     } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  const handleRedirectSignIn = async () => {
-    setIsLoggingIn(true);
-    setAuthError(null);
-    try {
-      await googleSignInRedirect();
-    } catch (err: any) {
-      setAuthError(err?.message || 'Redirect sign-in failed');
       setIsLoggingIn(false);
     }
   };
@@ -289,38 +280,25 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
                     <div className={`space-y-1.5 text-[11px] ${textMuted} leading-relaxed`}>
                       <p>
                         <strong>1. On the &ldquo;Google hasn&rsquo;t verified this app&rdquo; screen:</strong>{' '}
-                        Do not click the blue <em>&ldquo;Back to safety&rdquo;</em> button (that closes the popup). Instead, click{' '}
-                        <strong>&ldquo;Advanced&rdquo;</strong> (bottom-left) &rarr;{' '}
-                        <strong>&ldquo;Go to app (unsafe)&rdquo;</strong> &rarr; check the Google Drive &amp; Sheets boxes and click <strong>Continue</strong>.
-                      </p>
-                      <p>
-                        <strong>2. Installed Phone App / Mobile Browser:</strong>{' '}
-                        If you are using the installed Android app or mobile browser where popups close automatically, use <strong>Redirect Sign-In</strong> below:
+                        Click <strong>&ldquo;Advanced&rdquo;</strong> (bottom-left) &rarr;{' '}
+                        <strong>&ldquo;Go to app (unsafe)&rdquo;</strong> &rarr; select the Google Drive &amp; Sheets permissions and click <strong>Continue</strong>.
                       </p>
                       {currentHostname && currentHostname.endsWith('github.io') && (
                         <p>
-                          <strong>3. GitHub Pages Domain:</strong> Ensure{' '}
-                          <code className="font-mono text-amber-500">{currentHostname}</code> is added under{' '}
-                          <strong>Firebase Console &rarr; Authentication &rarr; Settings &rarr; Authorized domains</strong>.
+                          <strong>2. GitHub Pages Domain:</strong> Ensure{' '}
+                          <code className="font-mono text-amber-500">https://{currentHostname}</code> is added under{' '}
+                          <strong>Google Cloud Console &rarr; APIs &amp; Services &rarr; Credentials &rarr; OAuth 2.0 Client IDs &rarr; Authorized JavaScript origins</strong>.
                         </p>
                       )}
                     </div>
                     <div className="pt-1 flex flex-wrap items-center gap-2">
                       <button
                         type="button"
-                        onClick={handleRedirectSignIn}
+                        onClick={handleSignIn}
                         disabled={isLoggingIn}
                         className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 rounded-md text-xs font-medium cursor-pointer"
                       >
-                        Sign In via Redirect (Mobile / Installed App)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleSignIn}
-                        disabled={isLoggingIn}
-                        className={`px-3 py-1.5 rounded-md text-xs font-mono border ${borderClass} ${subtleSurfaceClass} cursor-pointer`}
-                      >
-                        Retry Popup
+                        Retry Connect Google
                       </button>
                     </div>
                   </>

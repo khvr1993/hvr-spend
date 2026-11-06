@@ -3,6 +3,7 @@ import {
   getAuth,
   signInWithPopup,
   signInWithRedirect,
+  signInWithCredential,
   getRedirectResult,
   browserPopupRedirectResolver,
   GoogleAuthProvider,
@@ -13,6 +14,30 @@ import {
 import * as XLSX from 'xlsx';
 import { MonthlySummary, Transaction, MonthlyBudget } from '../types';
 import { calculateWeeklyMatrix, formatDriveFileTitle } from '../utils/expenseCalculations';
+
+declare global {
+  interface Window {
+    google?: {
+      accounts?: {
+        oauth2?: {
+          initTokenClient: (config: {
+            client_id: string;
+            scope: string;
+            prompt?: string;
+            callback: (response: {
+              access_token?: string;
+              error?: string;
+              error_description?: string;
+            }) => void;
+            error_callback?: (err: { type?: string; message?: string }) => void;
+          }) => {
+            requestAccessToken: (overrideConfig?: { prompt?: string }) => void;
+          };
+        };
+      };
+    };
+  }
+}
 
 // Construct public Firebase Web client configuration at runtime so GitHub's regex scanner does not false-positive on the public web identifier
 const defaultWebApiKey = ['AIzaSy', 'Cjn38cxkXYGBRE1wgBo51AXbS1DYdApXc'].join('');
@@ -29,6 +54,19 @@ const firebaseConfig = {
   appId:
     import.meta.env.VITE_FIREBASE_APP_ID || '1:968246684697:web:7267b2a3b7ae083d218e88',
 };
+
+const GOOGLE_OAUTH_CLIENT_ID =
+  import.meta.env.VITE_GOOGLE_CLIENT_ID ||
+  '968246684697-p915gg26s92b0ok5au6bfqjpbb82bsig.apps.googleusercontent.com';
+
+// Eagerly ensure Google Identity Services (GIS) client script is loaded in the document
+if (typeof document !== 'undefined' && !document.querySelector('script[src*="accounts.google.com/gsi/client"]')) {
+  const gsiScript = document.createElement('script');
+  gsiScript.src = 'https://accounts.google.com/gsi/client';
+  gsiScript.async = true;
+  gsiScript.defer = true;
+  document.head.appendChild(gsiScript);
+}
 
 // Initialize Firebase App safely (singleton)
 const app =
@@ -55,17 +93,91 @@ function createGoogleProvider(): GoogleAuthProvider {
   return provider;
 }
 
-// Session-backed memory cache for access token
+// Session-backed memory cache for access token and fallback user profile
 const TOKEN_SESSION_KEY = 'hvr_gdrive_access_token';
-let cachedAccessToken: string | null = (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(TOKEN_SESSION_KEY) : null);
+const USER_SESSION_KEY = 'hvr_gdrive_user_profile';
+let cachedAccessToken: string | null =
+  typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(TOKEN_SESSION_KEY) : null;
 let isSigningIn = false;
+
+function saveSessionAuth(token: string, user: Partial<User>) {
+  cachedAccessToken = token;
+  try {
+    sessionStorage.setItem(TOKEN_SESSION_KEY, token);
+    sessionStorage.setItem(
+      USER_SESSION_KEY,
+      JSON.stringify({
+        uid: user.uid || 'google-user',
+        displayName: user.displayName || 'Google User',
+        email: user.email || '',
+        photoURL: user.photoURL || null,
+      })
+    );
+  } catch {}
+}
+
+function getCachedSessionUser(): User | null {
+  try {
+    const raw = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(USER_SESSION_KEY) : null;
+    if (!raw) return null;
+    return JSON.parse(raw) as User;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveUserFromAccessToken(accessToken: string): Promise<User> {
+  // 1. Try signing into Firebase Auth directly with the Google OAuth access token (pure REST call, no popup/iframe)
+  if (auth) {
+    try {
+      const credential = GoogleAuthProvider.credential(null, accessToken);
+      const userCred = await signInWithCredential(auth, credential);
+      if (userCred.user) {
+        return userCred.user;
+      }
+    } catch (e) {
+      console.warn('signInWithCredential fallback to userinfo:', e);
+    }
+  }
+
+  // 2. Fallback: fetch Google OAuth2 userinfo directly with the access token
+  const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (res.ok) {
+    const profile = await res.json();
+    return {
+      uid: profile.sub || 'google-user',
+      displayName: profile.name || profile.email || 'Google Account',
+      email: profile.email || null,
+      photoURL: profile.picture || null,
+    } as User;
+  }
+
+  return {
+    uid: 'google-user',
+    displayName: 'Google Account',
+    email: null,
+    photoURL: null,
+  } as User;
+}
 
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
 ) => {
+  // Restore active session immediately if present
+  const existingToken =
+    cachedAccessToken ||
+    (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(TOKEN_SESSION_KEY) : null);
+  const existingUser = getCachedSessionUser();
+  if (existingToken && existingUser) {
+    cachedAccessToken = existingToken;
+    if (onAuthSuccess) onAuthSuccess(existingUser, existingToken);
+  }
+
   if (!auth) {
-    if (onAuthFailure) onAuthFailure();
+    if (!existingToken && onAuthFailure) onAuthFailure();
     return () => {};
   }
 
@@ -75,11 +187,8 @@ export const initAuth = (
       if (result && result.user) {
         const credential = GoogleAuthProvider.credentialFromResult(result);
         if (credential?.accessToken) {
-          cachedAccessToken = credential.accessToken;
-          try {
-            sessionStorage.setItem(TOKEN_SESSION_KEY, credential.accessToken);
-          } catch {}
-          if (onAuthSuccess) onAuthSuccess(result.user, cachedAccessToken);
+          saveSessionAuth(credential.accessToken, result.user);
+          if (onAuthSuccess) onAuthSuccess(result.user, credential.accessToken);
         }
       }
     })
@@ -88,42 +197,95 @@ export const initAuth = (
     });
 
   return onAuthStateChanged(auth, async (user: User | null) => {
-    if (user) {
-      const token = cachedAccessToken || (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(TOKEN_SESSION_KEY) : null);
-      if (token) {
-        cachedAccessToken = token;
-        if (onAuthSuccess) onAuthSuccess(user, token);
-      } else if (!isSigningIn) {
-        // User is logged into Firebase Auth, but accessToken from OAuth provider was not cached in this session.
-        if (onAuthFailure) onAuthFailure();
+    const token =
+      cachedAccessToken ||
+      (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(TOKEN_SESSION_KEY) : null);
+    if (user && token) {
+      saveSessionAuth(token, user);
+      if (onAuthSuccess) onAuthSuccess(user, token);
+    } else if (token) {
+      const sessionUser = getCachedSessionUser();
+      if (sessionUser && onAuthSuccess) {
+        onAuthSuccess(sessionUser, token);
       }
-    } else {
+    } else if (!isSigningIn) {
       cachedAccessToken = null;
-      try {
-        sessionStorage.removeItem(TOKEN_SESSION_KEY);
-      } catch {}
       if (onAuthFailure) onAuthFailure();
     }
   });
 };
 
+/**
+ * Primary Google Sign-In using Google Identity Services (GIS) Token Client.
+ * Communicates directly between accounts.google.com and the app window without relying on
+ * Firebase's third-party __\/auth\/handler iframe, preventing auth/popup-closed-by-user errors.
+ */
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
+  isSigningIn = true;
+
+  // 1. Prefer Google Identity Services (GIS) direct OAuth2 token client
+  if (typeof window !== 'undefined' && window.google?.accounts?.oauth2?.initTokenClient) {
+    try {
+      const gisResult = await new Promise<{ user: User; accessToken: string }>((resolve, reject) => {
+        const tokenClient = window.google!.accounts!.oauth2!.initTokenClient({
+          client_id: GOOGLE_OAUTH_CLIENT_ID,
+          scope: [
+            'openid',
+            'https://www.googleapis.com/auth/userinfo.email',
+            'https://www.googleapis.com/auth/userinfo.profile',
+            ...SCOPES,
+          ].join(' '),
+          callback: async (response) => {
+            if (response.error || !response.access_token) {
+              reject(
+                new Error(
+                  response.error_description ||
+                    response.error ||
+                    'Failed to obtain Google Drive access token.'
+                )
+              );
+              return;
+            }
+            try {
+              const token = response.access_token;
+              const user = await resolveUserFromAccessToken(token);
+              saveSessionAuth(token, user);
+              resolve({ user, accessToken: token });
+            } catch (err) {
+              reject(err);
+            }
+          },
+          error_callback: (err) => {
+            reject(new Error(err?.message || err?.type || 'Google sign-in popup closed.'));
+          },
+        });
+
+        tokenClient.requestAccessToken({ prompt: '' });
+      });
+
+      isSigningIn = false;
+      return gisResult;
+    } catch (gisErr: any) {
+      console.warn('GIS token client error:', gisErr);
+      isSigningIn = false;
+      throw gisErr;
+    }
+  }
+
+  // 2. Fallback to Firebase signInWithPopup if GIS script hasn't loaded
   if (!auth) {
+    isSigningIn = false;
     throw new Error('Firebase configuration missing.');
   }
   try {
-    isSigningIn = true;
     const provider = createGoogleProvider();
     const result = await signInWithPopup(auth, provider, browserPopupRedirectResolver);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
       throw new Error('Failed to retrieve access token from Google sign-in.');
     }
-    cachedAccessToken = credential.accessToken;
-    try {
-      sessionStorage.setItem(TOKEN_SESSION_KEY, credential.accessToken);
-    } catch {}
-    return { user: result.user, accessToken: cachedAccessToken };
+    saveSessionAuth(credential.accessToken, result.user);
+    return { user: result.user, accessToken: credential.accessToken };
   } catch (error: any) {
     console.error('Sign-in error:', error);
     throw error;
@@ -142,7 +304,10 @@ export const googleSignInRedirect = async (): Promise<void> => {
 };
 
 export const getAccessToken = async (): Promise<string | null> => {
-  return cachedAccessToken || (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(TOKEN_SESSION_KEY) : null);
+  return (
+    cachedAccessToken ||
+    (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(TOKEN_SESSION_KEY) : null)
+  );
 };
 
 export const setCachedAccessToken = (token: string | null) => {
@@ -158,11 +323,14 @@ export const setCachedAccessToken = (token: string | null) => {
 
 export const logout = async () => {
   if (auth) {
-    await signOut(auth);
+    try {
+      await signOut(auth);
+    } catch {}
   }
   cachedAccessToken = null;
   try {
     sessionStorage.removeItem(TOKEN_SESSION_KEY);
+    sessionStorage.removeItem(USER_SESSION_KEY);
   } catch {}
 };
 
