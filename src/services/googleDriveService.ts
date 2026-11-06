@@ -55,8 +55,9 @@ function createGoogleProvider(): GoogleAuthProvider {
   return provider;
 }
 
-// Memory-only cache for access token
-let cachedAccessToken: string | null = null;
+// Session-backed memory cache for access token
+const TOKEN_SESSION_KEY = 'hvr_gdrive_access_token';
+let cachedAccessToken: string | null = (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(TOKEN_SESSION_KEY) : null);
 let isSigningIn = false;
 
 export const initAuth = (
@@ -75,6 +76,9 @@ export const initAuth = (
         const credential = GoogleAuthProvider.credentialFromResult(result);
         if (credential?.accessToken) {
           cachedAccessToken = credential.accessToken;
+          try {
+            sessionStorage.setItem(TOKEN_SESSION_KEY, credential.accessToken);
+          } catch {}
           if (onAuthSuccess) onAuthSuccess(result.user, cachedAccessToken);
         }
       }
@@ -84,10 +88,20 @@ export const initAuth = (
     });
 
   return onAuthStateChanged(auth, async (user: User | null) => {
-    if (user && cachedAccessToken) {
-      if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
-    } else if (!isSigningIn) {
+    if (user) {
+      const token = cachedAccessToken || (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(TOKEN_SESSION_KEY) : null);
+      if (token) {
+        cachedAccessToken = token;
+        if (onAuthSuccess) onAuthSuccess(user, token);
+      } else if (!isSigningIn) {
+        // User is logged into Firebase Auth, but accessToken from OAuth provider was not cached in this session.
+        if (onAuthFailure) onAuthFailure();
+      }
+    } else {
       cachedAccessToken = null;
+      try {
+        sessionStorage.removeItem(TOKEN_SESSION_KEY);
+      } catch {}
       if (onAuthFailure) onAuthFailure();
     }
   });
@@ -106,6 +120,9 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
       throw new Error('Failed to retrieve access token from Google sign-in.');
     }
     cachedAccessToken = credential.accessToken;
+    try {
+      sessionStorage.setItem(TOKEN_SESSION_KEY, credential.accessToken);
+    } catch {}
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
     console.error('Sign-in error:', error);
@@ -125,11 +142,18 @@ export const googleSignInRedirect = async (): Promise<void> => {
 };
 
 export const getAccessToken = async (): Promise<string | null> => {
-  return cachedAccessToken;
+  return cachedAccessToken || (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(TOKEN_SESSION_KEY) : null);
 };
 
 export const setCachedAccessToken = (token: string | null) => {
   cachedAccessToken = token;
+  try {
+    if (token) {
+      sessionStorage.setItem(TOKEN_SESSION_KEY, token);
+    } else {
+      sessionStorage.removeItem(TOKEN_SESSION_KEY);
+    }
+  } catch {}
 };
 
 export const logout = async () => {
@@ -137,6 +161,9 @@ export const logout = async () => {
     await signOut(auth);
   }
   cachedAccessToken = null;
+  try {
+    sessionStorage.removeItem(TOKEN_SESSION_KEY);
+  } catch {}
 };
 
 export interface DriveFileInfo {
