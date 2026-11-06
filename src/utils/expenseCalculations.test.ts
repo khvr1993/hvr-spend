@@ -8,6 +8,8 @@ import {
   parseCSVTransactions,
   getMonthIdFromDate,
   formatMonthIdToName,
+  formatDriveFileTitle,
+  isDailySyncDue,
 } from './expenseCalculations';
 import { Transaction } from '../types';
 
@@ -31,11 +33,17 @@ test('formatINR formats numbers with Indian currency symbol and 2 decimals', () 
   assert.equal(formatINR(-500), '-₹500.00');
 });
 
-test('getMonthIdFromDate and formatMonthIdToName extract and format month boards', () => {
+test('getMonthIdFromDate, formatMonthIdToName, formatDriveFileTitle, and isDailySyncDue work accurately', () => {
   assert.equal(getMonthIdFromDate('2026-12-19'), '2026-12');
   assert.equal(getMonthIdFromDate('2027-01-03'), '2027-01');
   assert.equal(formatMonthIdToName('2026-12'), 'Dec-26 Expenses');
   assert.equal(formatMonthIdToName('2027-01'), 'Jan-27 Expenses');
+  assert.equal(formatDriveFileTitle('2026-12'), '[HvrExpenseManager] Dec-26');
+  assert.equal(formatDriveFileTitle('2026-11'), '[HvrExpenseManager] Nov-26');
+  assert.equal(isDailySyncDue(undefined, '2026-11-06'), true);
+  const nov6Timestamp = new Date('2026-11-06T08:00:00Z').getTime();
+  assert.equal(isDailySyncDue(nov6Timestamp, '2026-11-06'), false);
+  assert.equal(isDailySyncDue(nov6Timestamp, '2026-11-07'), true);
 });
 
 test('calculateSummary respects renamed and deleted categories in expenseBudgets', () => {

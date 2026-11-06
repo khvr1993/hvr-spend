@@ -9,17 +9,17 @@ import {
   DriveFileInfo,
 } from '../services/googleDriveService';
 import { MonthlySummary, Transaction, MonthlyBudget } from '../types';
+import { formatDriveFileTitle, isDailySyncDue } from '../utils/expenseCalculations';
 import {
   Cloud,
   Download,
   ExternalLink,
   Check,
-  AlertCircle,
   Loader2,
   X,
   LogOut,
   RefreshCw,
-  FileSpreadsheet,
+  Clock,
 } from 'lucide-react';
 
 interface DriveSyncModalProps {
@@ -33,6 +33,9 @@ interface DriveSyncModalProps {
   onAuthSuccess: (user: User, token: string) => void;
   onAuthLogout: () => void;
   onImportDriveSheet: (file: DriveFileInfo) => void;
+  onUpdateBudget?: (updated: MonthlyBudget) => void;
+  dailyAutoSync?: boolean;
+  onToggleDailyAutoSync?: (enabled: boolean) => void;
   isDark?: boolean;
 }
 
@@ -47,7 +50,10 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
   onAuthSuccess,
   onAuthLogout,
   onImportDriveSheet,
-  isDark = true,
+  onUpdateBudget,
+  dailyAutoSync = true,
+  onToggleDailyAutoSync,
+  isDark = false,
 }) => {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -57,6 +63,7 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
     url: string;
     title: string;
     id: string;
+    isUpdated: boolean;
   } | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
 
@@ -69,6 +76,10 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
 
   if (!isOpen) return null;
 
+  const targetFileTitle = formatDriveFileTitle(summary.monthId);
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const syncedToday = !isDailySyncDue(budget.lastSyncedAt, todayStr);
+
   // Surface classes
   const surfaceClass = isDark
     ? 'bg-[#121214] border-[#262626] text-zinc-100'
@@ -80,7 +91,7 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
 
   const textMuted = isDark ? 'text-zinc-400' : 'text-zinc-500';
   const textSubtle = isDark ? 'text-zinc-500' : 'text-zinc-400';
-  const borderClass = isDark ? 'border-[#262626]' : 'border-[#E5E5E5]';
+  const borderClass = isDark ? 'border-[#262626] divide-[#262626]' : 'border-[#E5E5E5] divide-[#E5E5E5]';
 
   const handleSignIn = async () => {
     setIsLoggingIn(true);
@@ -118,8 +129,21 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
     setIsSyncing(true);
     setSyncError(null);
     try {
-      const result = await syncToGoogleDrive(accessToken, summary, transactions, budget);
+      const result = await syncToGoogleDrive(
+        accessToken,
+        summary,
+        transactions,
+        budget,
+        budget.driveFileId
+      );
       setSyncResult(result);
+      if (onUpdateBudget) {
+        onUpdateBudget({
+          ...budget,
+          driveFileId: result.id,
+          lastSyncedAt: Date.now(),
+        });
+      }
     } catch (err: any) {
       setSyncError(err?.message || 'Sync failed');
     } finally {
@@ -132,7 +156,7 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${summary.monthName || 'Expenses'}.xlsx`;
+    a.download = `${targetFileTitle}.xlsx`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -159,60 +183,63 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
         <div className={`px-6 py-4 border-b ${borderClass} flex items-center justify-between ${subtleSurfaceClass}`}>
           <div>
             <h3 className="text-sm font-medium tracking-tight">
-              Google Drive & Excel Sync
+              Google Drive &amp; Excel Sync
             </h3>
-            <p className={`text-xs ${textMuted} mt-0.5`}>
-              Synchronize {summary.monthName} to Google Sheets or download .xlsx
+            <p className={`text-xs font-mono ${textMuted} mt-0.5`}>
+              File: {targetFileTitle}
             </p>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className={`${textSubtle} hover:${textMuted} p-1`}
+            className={`${textSubtle} hover:${textMuted} p-1 cursor-pointer`}
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Body */}
-        <div className="p-6 space-y-6 overflow-y-auto">
+        <div className="p-6 space-y-5 overflow-y-auto">
           {/* Account Status Card */}
           <div className={`p-4 rounded-md border ${borderClass} ${subtleSurfaceClass}`}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-3 min-w-0">
                 {currentUser?.photoURL ? (
                   <img
                     src={currentUser.photoURL}
                     alt={currentUser.displayName || ''}
-                    className="w-8 h-8 rounded-full border border-zinc-700"
+                    className="w-8 h-8 rounded-full border border-zinc-700 shrink-0"
                   />
                 ) : (
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-mono font-medium ${isDark ? 'bg-zinc-800 text-zinc-300' : 'bg-zinc-200 text-zinc-700'}`}>
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-mono font-medium shrink-0 ${isDark ? 'bg-zinc-800 text-zinc-300' : 'bg-zinc-200 text-zinc-700'}`}>
                     {currentUser?.displayName ? currentUser.displayName[0] : 'G'}
                   </div>
                 )}
-                <div>
-                  <p className="text-xs font-medium">
+                <div className="min-w-0">
+                  <p className="text-xs font-medium truncate">
                     {currentUser ? currentUser.displayName || 'Google Account' : 'Not Authenticated'}
                   </p>
-                  <p className={`text-[11px] ${textMuted} font-mono truncate max-w-[200px]`}>
-                    {currentUser ? currentUser.email : 'Sign in to access Google Drive storage'}
+                  <p className={`text-[11px] ${textMuted} font-mono truncate`}>
+                    {currentUser ? currentUser.email : 'Sign in to sync with Google Drive'}
                   </p>
                 </div>
               </div>
 
               {currentUser ? (
                 <button
+                  type="button"
                   onClick={handleLogout}
-                  className={`px-2.5 py-1 text-xs font-mono ${textMuted} hover:text-inherit flex items-center gap-1 cursor-pointer`}
+                  className={`px-2.5 py-1 text-xs font-mono ${textMuted} hover:text-inherit flex items-center gap-1 cursor-pointer shrink-0`}
                 >
                   <LogOut className="w-3 h-3" />
                   Sign Out
                 </button>
               ) : (
                 <button
+                  type="button"
                   onClick={handleSignIn}
                   disabled={isLoggingIn}
-                  className="px-3 py-1.5 bg-zinc-200 dark:bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-medium rounded-md transition-colors flex items-center gap-2 cursor-pointer"
+                  className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-medium rounded-md transition-colors flex items-center gap-2 cursor-pointer shrink-0"
                 >
                   {isLoggingIn ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -229,15 +256,54 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
             )}
           </div>
 
+          {/* Daily Auto-Sync on App Open Setting */}
+          <div className={`p-4 rounded-md border ${borderClass} ${subtleSurfaceClass} flex items-center justify-between gap-4`}>
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2">
+                <Clock className="w-3.5 h-3.5 text-amber-500" />
+                <span className="text-xs font-medium">Auto-Sync Once a Day on App Open</span>
+              </div>
+              <p className={`text-[11px] ${textMuted}`}>
+                Automatically syncs <strong>{targetFileTitle}</strong> once per day when you open the app with Google connected.
+              </p>
+              {budget.lastSyncedAt && (
+                <p className={`text-[10px] font-mono ${syncedToday ? 'text-amber-500' : textSubtle} pt-0.5`}>
+                  {syncedToday ? '✓ Synced today' : 'Last synced'}:{' '}
+                  {new Date(budget.lastSyncedAt).toLocaleString()}
+                </p>
+              )}
+            </div>
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={dailyAutoSync}
+              onClick={() => onToggleDailyAutoSync && onToggleDailyAutoSync(!dailyAutoSync)}
+              className={`w-10 h-5.5 rounded-full transition-colors p-0.5 cursor-pointer shrink-0 ${
+                dailyAutoSync ? 'bg-amber-500' : isDark ? 'bg-zinc-700' : 'bg-zinc-300'
+              }`}
+            >
+              <span
+                className={`block w-4.5 h-4.5 rounded-full bg-white shadow-2xs transition-transform ${
+                  dailyAutoSync ? 'translate-x-4.5' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+
           {/* Sync Success Banner */}
           {syncResult && (
             <div className={`p-4 rounded-md border border-amber-500/30 ${subtleSurfaceClass} space-y-2`}>
               <div className="flex items-center gap-2 text-amber-500 text-xs font-medium">
                 <Check className="w-4 h-4 stroke-[2.5]" />
-                <span>Spreadsheet successfully updated in Google Drive</span>
+                <span>
+                  {syncResult.isUpdated
+                    ? 'Existing spreadsheet updated in-place in Google Drive'
+                    : 'New spreadsheet created in Google Drive'}
+                </span>
               </div>
               <p className={`text-xs ${textMuted}`}>
-                Document &ldquo;{syncResult.title}&rdquo; is synchronized with all 4 sheets.
+                File <strong>&ldquo;{syncResult.title}&rdquo;</strong> is synchronized with all 4 tabs.
               </p>
               <div className="pt-1">
                 <a
@@ -247,7 +313,7 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-amber-500 hover:bg-amber-400 text-zinc-950 transition-colors"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
-                  Open in Google Sheets
+                  Open {syncResult.title}
                 </a>
               </div>
             </div>
@@ -262,6 +328,7 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
           {/* Actions Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <button
+              type="button"
               onClick={handleInitiateSync}
               disabled={isSyncing || !currentUser}
               className={`p-4 rounded-md border text-left transition-all flex flex-col justify-between ${
@@ -273,18 +340,19 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
               <div className="flex items-center justify-between mb-3">
                 <Cloud className="w-4 h-4 text-amber-500" />
                 <span className="text-[10px] font-mono uppercase text-amber-500">
-                  Cloud
+                  {isSyncing ? 'Syncing...' : 'Cloud'}
                 </span>
               </div>
               <div>
-                <p className="text-xs font-medium">Sync to Google Drive</p>
-                <p className={`text-[11px] ${textSubtle} mt-0.5`}>
-                  Update native Google Sheet directly in your Drive
+                <p className="text-xs font-medium">Sync Now to Google Drive</p>
+                <p className={`text-[11px] ${textSubtle} mt-0.5 font-mono truncate`}>
+                  {targetFileTitle}
                 </p>
               </div>
             </button>
 
             <button
+              type="button"
               onClick={handleDownloadExcel}
               className={`p-4 rounded-md border ${borderClass} ${subtleSurfaceClass} hover:border-zinc-500 text-left transition-all flex flex-col justify-between cursor-pointer`}
             >
@@ -296,8 +364,8 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
               </div>
               <div>
                 <p className="text-xs font-medium">Download Excel (.xlsx)</p>
-                <p className={`text-[11px] ${textSubtle} mt-0.5`}>
-                  Generate complete offline workbook backup
+                <p className={`text-[11px] ${textSubtle} mt-0.5 font-mono truncate`}>
+                  {targetFileTitle}.xlsx
                 </p>
               </div>
             </button>
@@ -316,6 +384,7 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
                   </p>
                 </div>
                 <button
+                  type="button"
                   onClick={handleFetchDriveFiles}
                   disabled={isLoadingFiles}
                   className={`text-xs font-mono font-medium ${textMuted} hover:text-inherit flex items-center gap-1 cursor-pointer`}
@@ -334,6 +403,7 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
                     >
                       <span className="font-medium truncate pr-2">{file.name}</span>
                       <button
+                        type="button"
                         onClick={() => onImportDriveSheet(file)}
                         className={`px-2 py-0.5 text-xs font-mono rounded border ${borderClass} hover:opacity-80 transition-opacity cursor-pointer`}
                       >
@@ -350,36 +420,40 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
         {/* Footer */}
         <div className={`px-6 py-3 border-t ${borderClass} ${subtleSurfaceClass} flex justify-end`}>
           <button
+            type="button"
             onClick={onClose}
-            className="px-4 py-1.5 bg-zinc-200 dark:bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-medium rounded-md cursor-pointer"
+            className="px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-medium rounded-md cursor-pointer"
           >
             Done
           </button>
         </div>
       </div>
 
-      {/* Confirmation Dialog (Mandatory for destructive/mutating operations) */}
+      {/* Confirmation Dialog */}
       {showConfirmDialog && (
         <div className="fixed inset-0 z-60 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
           <div className={`border rounded-lg shadow-2xl max-w-sm w-full p-6 space-y-4 ${surfaceClass}`}>
             <h4 className="text-sm font-medium tracking-tight">
-              Confirm Google Drive Synchronization
+              Confirm Google Drive Sync
             </h4>
             <p className={`text-xs ${textMuted} leading-relaxed`}>
-              This action will create or update the spreadsheet titled <strong>&ldquo;{summary.monthName}&rdquo;</strong> in your Google Drive with 4 structured tabs (Summary, Expenses by Week, Transactions, and Category).
+              This will create or overwrite the spreadsheet titled{' '}
+              <strong className="font-mono">&ldquo;{targetFileTitle}&rdquo;</strong> in your Google Drive with 4 structured tabs (Summary, Expenses by Week, Transactions, and Category).
             </p>
             <div className={`flex items-center justify-end gap-2 pt-3 border-t ${borderClass}`}>
               <button
+                type="button"
                 onClick={() => setShowConfirmDialog(false)}
                 className={`px-3 py-1.5 rounded-md text-xs border ${borderClass} ${subtleSurfaceClass} ${textMuted} hover:text-inherit cursor-pointer`}
               >
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={handleConfirmSync}
                 className="px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-medium rounded-md shadow-2xs cursor-pointer"
               >
-                Confirm & Sync
+                Confirm &amp; Sync
               </button>
             </div>
           </div>

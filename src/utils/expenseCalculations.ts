@@ -82,6 +82,28 @@ export function formatMonthIdToName(monthId: string): string {
 }
 
 /**
+ * Formats a YYYY-MM monthId into the unique Google Drive spreadsheet filename
+ * e.g. "2026-12" -> "[HvrExpenseManager] Dec-26"
+ */
+export function formatDriveFileTitle(monthId: string): string {
+  const parts = monthId.split('-');
+  if (parts.length < 2) return `[HvrExpenseManager] ${monthId}`;
+  const yearShort = parts[0].slice(-2);
+  const monthIndex = parseInt(parts[1], 10) - 1;
+  const monthShort = MONTH_SHORT_NAMES[monthIndex] || parts[1];
+  return `[HvrExpenseManager] ${monthShort}-${yearShort}`;
+}
+
+/**
+ * Determines whether the daily automatic Drive sync is due for a monthly board
+ */
+export function isDailySyncDue(lastSyncedAt: number | undefined, todayDateStr: string): boolean {
+  if (!lastSyncedAt) return true;
+  const syncedDateStr = new Date(lastSyncedAt).toISOString().slice(0, 10);
+  return syncedDateStr !== todayDateStr;
+}
+
+/**
  * Calculates summary for a given month
  */
 export function calculateSummary(

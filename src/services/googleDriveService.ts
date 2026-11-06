@@ -8,13 +8,34 @@ import {
   User,
 } from 'firebase/auth';
 import * as XLSX from 'xlsx';
-import firebaseConfig from '../../firebase-applet-config.json';
 import { MonthlySummary, Transaction, MonthlyBudget } from '../types';
-import { calculateWeeklyMatrix, formatINR } from '../utils/expenseCalculations';
+import { calculateWeeklyMatrix, formatINR, formatDriveFileTitle } from '../utils/expenseCalculations';
+
+// Load local firebase-applet-config.json when present (AI Studio), or fall back to VITE_FIREBASE_* env vars (GitHub Pages / CI)
+const localConfigModules = import.meta.glob('../../firebase-applet-config.json', {
+  eager: true,
+  import: 'default',
+}) as Record<string, Record<string, string>>;
+
+const localFirebaseConfig = Object.values(localConfigModules)[0];
+
+const firebaseConfig = localFirebaseConfig || {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || '',
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '',
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || '',
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '',
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || '',
+};
 
 // Initialize Firebase App safely (singleton)
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-export const auth = getAuth(app);
+const app =
+  getApps().length === 0 && firebaseConfig.apiKey
+    ? initializeApp(firebaseConfig)
+    : getApps().length > 0
+    ? getApp()
+    : null;
+export const auth = app ? getAuth(app) : null;
 
 export const SCOPES = [
   'https://www.googleapis.com/auth/drive.file',
@@ -34,6 +55,10 @@ export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
 ) => {
+  if (!auth) {
+    if (onAuthFailure) onAuthFailure();
+    return () => {};
+  }
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user && cachedAccessToken) {
       if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
@@ -45,6 +70,9 @@ export const initAuth = (
 };
 
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
+  if (!auth) {
+    throw new Error('Firebase configuration missing. Configure firebase-applet-config.json or VITE_FIREBASE_* secrets.');
+  }
   try {
     isSigningIn = true;
     const result = await signInWithPopup(auth, provider);
@@ -71,7 +99,9 @@ export const setCachedAccessToken = (token: string | null) => {
 };
 
 export const logout = async () => {
-  await signOut(auth);
+  if (auth) {
+    await signOut(auth);
+  }
   cachedAccessToken = null;
 };
 
@@ -214,7 +244,9 @@ export function generateExcelWorkbookBlob(
 }
 
 /**
- * Syncs the expense tracking data directly to Google Drive as a native Google Sheet
+ * Syncs the expense tracking data directly to Google Drive as a native Google Sheet.
+ * Automatically updates/overwrites the existing file for the month if it already exists,
+ * or creates a new file on the first sync for that month.
  */
 export async function syncToGoogleDrive(
   accessToken: string,
@@ -222,14 +254,68 @@ export async function syncToGoogleDrive(
   transactions: Transaction[],
   budget: MonthlyBudget,
   existingSpreadsheetId?: string
-): Promise<{ id: string; url: string; title: string }> {
-  const title = `${summary.monthName || 'Monthly Expenses'}`;
+): Promise<{ id: string; url: string; title: string; isUpdated: boolean }> {
+  const title = formatDriveFileTitle(summary.monthId);
 
-  let spreadsheetId = existingSpreadsheetId;
+  let spreadsheetId = existingSpreadsheetId || budget.driveFileId;
   let webViewLink = '';
+  let isUpdated = false;
 
+  // 1. If we don't have a stored spreadsheetId yet, search Drive for an existing sheet with this month's exact title
   if (!spreadsheetId) {
-    // Create new Google Spreadsheet via Sheets API
+    const escapedTitle = title.replace(/'/g, "\\'");
+    const searchQuery = `name = '${escapedTitle}' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false`;
+    const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+      searchQuery
+    )}&fields=files(id,name,webViewLink)&orderBy=modifiedTime desc&pageSize=1`;
+
+    const searchRes = await fetch(searchUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    if (searchRes.ok) {
+      const searchData = await searchRes.json();
+      if (searchData.files && searchData.files.length > 0) {
+        spreadsheetId = searchData.files[0].id;
+        webViewLink = searchData.files[0].webViewLink || '';
+        isUpdated = true;
+      }
+    }
+  } else {
+    isUpdated = true;
+  }
+
+  // 2. If an existing sheet was found, clear its 4 tabs first so removed rows don't remain
+  if (spreadsheetId) {
+    const clearRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchClear`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ranges: [
+            'Summary!A1:Z100',
+            'Transactions!A1:Z1000',
+            "'Expenses by Week'!A1:Z100",
+            'Category!A1:Z100',
+          ],
+        }),
+      }
+    );
+
+    // If the file was deleted in Drive (404), fall back to creating a fresh sheet
+    if (clearRes.status === 404) {
+      spreadsheetId = undefined;
+      webViewLink = '';
+      isUpdated = false;
+    }
+  }
+
+  // 3. If no existing sheet was found for this month, create a new Google Spreadsheet
+  if (!spreadsheetId) {
     const createRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
       method: 'POST',
       headers: {
@@ -257,6 +343,7 @@ export async function syncToGoogleDrive(
     const created = await createRes.json();
     spreadsheetId = created.spreadsheetId;
     webViewLink = created.spreadsheetUrl;
+    isUpdated = false;
   }
 
   // Populate data into the sheets using spreadsheets.values.batchUpdate
@@ -397,6 +484,7 @@ export async function syncToGoogleDrive(
     id: spreadsheetId,
     url: webViewLink || `https://docs.google.com/spreadsheets/d/${spreadsheetId}`,
     title,
+    isUpdated,
   };
 }
 

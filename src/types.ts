@@ -27,6 +27,8 @@ export interface MonthlyBudget {
   startBalance: number;
   expenseBudgets: Record<string, number>;
   incomeBudgets: Record<string, number>;
+  driveFileId?: string;
+  lastSyncedAt?: number;
 }
 
 export interface MonthlySummary {

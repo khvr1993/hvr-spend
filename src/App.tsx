@@ -20,10 +20,16 @@ import {
   calculateWeekNumber,
   getMonthIdFromDate,
   formatMonthIdToName,
+  isDailySyncDue,
   DEFAULT_EXPENSE_CATEGORIES,
   DEFAULT_INCOME_CATEGORIES,
 } from './utils/expenseCalculations';
-import { initAuth, DriveFileInfo, importTransactionsFromGoogleSheet } from './services/googleDriveService';
+import {
+  initAuth,
+  DriveFileInfo,
+  importTransactionsFromGoogleSheet,
+  syncToGoogleDrive,
+} from './services/googleDriveService';
 
 // View Components
 import { QuickEntryHomeView } from './components/QuickEntryHomeView';
@@ -99,6 +105,11 @@ export default function App() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isDriveModalOpen, setIsDriveModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [dailyAutoSync, setDailyAutoSync] = useState<boolean>(() => {
+    const saved = localStorage.getItem('expense_app_daily_autosync');
+    return saved !== null ? saved === 'true' : true;
+  });
+  const [isAutoSyncingDaily, setIsAutoSyncingDaily] = useState(false);
 
   // Create New Month Modal State
   const [isNewMonthModalOpen, setIsNewMonthModalOpen] = useState(false);
@@ -193,6 +204,44 @@ export default function App() {
       currentBudget.incomeBudgets
     );
   }, [activeMonthId, currentBudget, transactions]);
+
+  // Daily Auto-Sync Once a Day when app opens and Google Drive is connected
+  useEffect(() => {
+    if (!dailyAutoSync || !accessToken || isAutoSyncingDaily) return;
+    const todayStr = new Date().toISOString().slice(0, 10);
+    if (!isDailySyncDue(currentBudget.lastSyncedAt, todayStr)) return;
+
+    let cancelled = false;
+    setIsAutoSyncingDaily(true);
+    syncToGoogleDrive(
+      accessToken,
+      currentSummary,
+      transactions,
+      currentBudget,
+      currentBudget.driveFileId
+    )
+      .then((res) => {
+        if (cancelled) return;
+        setMonths((prev) => ({
+          ...prev,
+          [activeMonthId]: {
+            ...currentBudget,
+            driveFileId: res.id,
+            lastSyncedAt: Date.now(),
+          },
+        }));
+      })
+      .catch((err) => {
+        console.error('Daily auto-sync error:', err);
+      })
+      .finally(() => {
+        if (!cancelled) setIsAutoSyncingDaily(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dailyAutoSync, accessToken, activeMonthId, currentBudget, currentSummary, transactions, isAutoSyncingDaily]);
 
   // Summaries for all months (for historical comparison chart)
   const allMonthsSummaries = useMemo<MonthlySummary[]>(() => {
@@ -932,6 +981,12 @@ export default function App() {
           setAccessToken(null);
         }}
         onImportDriveSheet={handleImportFromDriveFile}
+        onUpdateBudget={handleUpdateBudget}
+        dailyAutoSync={dailyAutoSync}
+        onToggleDailyAutoSync={(enabled) => {
+          setDailyAutoSync(enabled);
+          localStorage.setItem('expense_app_daily_autosync', String(enabled));
+        }}
         isDark={isDark}
       />
 
