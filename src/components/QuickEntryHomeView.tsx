@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Transaction, TransactionType, MonthlySummary, MonthlyBudget } from '../types';
 import {
   formatINR,
@@ -15,14 +15,16 @@ import {
   Check,
   SlidersHorizontal,
   FolderPlus,
-  Clock,
+  ChevronLeft,
+  ChevronRight,
+  ChevronDown,
 } from 'lucide-react';
 
 interface QuickEntryHomeViewProps {
   activeMonthId: string;
   currentSummary: MonthlySummary;
   months: Record<string, MonthlyBudget>;
-  recentTransactions: Transaction[];
+  recentTransactions?: Transaction[];
   expenseCategories: string[];
   incomeCategories: string[];
   onAddTransaction: (tx: Omit<Transaction, 'id' | 'createdAt'>) => void;
@@ -32,11 +34,39 @@ interface QuickEntryHomeViewProps {
   isDark?: boolean;
 }
 
+const MONTH_FULL_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+const WEEKDAYS_SHORT = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+
+function formatDisplayDate(dateStr: string): string {
+  const parts = dateStr.split('-').map(Number);
+  if (parts.length !== 3 || parts.some(isNaN)) return dateStr;
+  const [yr, mo, dy] = parts;
+  const dateObj = new Date(yr, mo - 1, dy);
+  return dateObj.toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
 export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
   activeMonthId,
   currentSummary,
   months,
-  recentTransactions,
   expenseCategories,
   incomeCategories,
   onAddTransaction,
@@ -59,6 +89,36 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
     monthName: string;
     monthId: string;
   } | null>(null);
+
+  // Modern Custom Date Picker Popover State
+  const [isCalendarOpen, setIsCalendarOpen] = useState(false);
+  const calendarRef = useRef<HTMLDivElement>(null);
+
+  // Calendar view month/year state synced with selected date
+  const parsedDateParts = date.split('-').map(Number);
+  const [viewYear, setViewYear] = useState<number>(parsedDateParts[0] || 2026);
+  const [viewMonth, setViewMonth] = useState<number>((parsedDateParts[1] || 11) - 1); // 0-indexed
+
+  useEffect(() => {
+    const [yr, mo] = date.split('-').map(Number);
+    if (!isNaN(yr) && !isNaN(mo)) {
+      setViewYear(yr);
+      setViewMonth(mo - 1);
+    }
+  }, [date]);
+
+  // Close custom calendar popover on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (calendarRef.current && !calendarRef.current.contains(e.target as Node)) {
+        setIsCalendarOpen(false);
+      }
+    };
+    if (isCalendarOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isCalendarOpen]);
 
   // Target month based on selected date
   const targetMonthId = getMonthIdFromDate(date);
@@ -89,17 +149,47 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
     }
   };
 
-  const handleQuickIncrement = (val: number) => {
-    const current = parseFloat(amount) || 0;
-    setAmount(String(current + val));
-    setError('');
-  };
-
   const setYesterday = () => {
     const d = new Date();
     d.setDate(d.getDate() - 1);
     setDate(d.toISOString().slice(0, 10));
+    setIsCalendarOpen(false);
   };
+
+  const handlePrevCalendarMonth = () => {
+    if (viewMonth === 0) {
+      setViewMonth(11);
+      setViewYear((y) => y - 1);
+    } else {
+      setViewMonth((m) => m - 1);
+    }
+  };
+
+  const handleNextCalendarMonth = () => {
+    if (viewMonth === 11) {
+      setViewMonth(0);
+      setViewYear((y) => y + 1);
+    } else {
+      setViewMonth((m) => m + 1);
+    }
+  };
+
+  const handleSelectCalendarDay = (day: number) => {
+    const formatted = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    setDate(formatted);
+    setIsCalendarOpen(false);
+  };
+
+  // Build days grid for viewYear & viewMonth
+  const firstDayOfWeek = new Date(viewYear, viewMonth, 1).getDay();
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const calendarDays: (number | null)[] = [];
+  for (let i = 0; i < firstDayOfWeek; i++) {
+    calendarDays.push(null);
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    calendarDays.push(d);
+  }
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -138,18 +228,13 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
   };
 
   return (
-    <div className="max-w-3xl mx-auto space-y-8 py-2">
-      {/* Minimal Header & Month Switcher Strip */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-2xl font-light tracking-tight">Quick Expense Entry</h2>
-          <p className={`text-xs ${textMuted} mt-1`}>
-            Log an expense or income below. It automatically routes to the month of the selected date.
-          </p>
-        </div>
+    <div className="max-w-2xl mx-auto space-y-6 sm:space-y-8 py-1 sm:py-2">
+      {/* Minimal Header & Month Status Strip */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <h2 className="text-xl sm:text-2xl font-light tracking-tight">Enter an Expense</h2>
 
         {/* Active Month Quick Status */}
-        <div className={`px-3.5 py-2 rounded-lg border ${borderClass} ${surfaceClass} flex items-center gap-4 text-xs`}>
+        <div className={`px-3.5 py-2 rounded-lg border ${borderClass} ${surfaceClass} flex items-center justify-between sm:justify-start gap-4 text-xs`}>
           <div>
             <span className={`block text-[10px] font-mono uppercase tracking-wider ${textSubtle}`}>
               Viewing Board
@@ -165,8 +250,9 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
             </span>
           </div>
           <button
+            type="button"
             onClick={() => onNavigateToTab('summary')}
-            className={`text-xs font-mono text-amber-500 hover:underline flex items-center gap-1 cursor-pointer ml-1`}
+            className="text-xs font-mono text-amber-500 hover:underline flex items-center gap-1 cursor-pointer ml-1"
           >
             Board
             <ArrowRight className="w-3 h-3" />
@@ -175,9 +261,9 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
       </div>
 
       {/* Main Minimal Entry Card */}
-      <div className={`border rounded-lg p-6 sm:p-8 shadow-2xs ${surfaceClass}`}>
+      <div className={`border rounded-lg p-5 sm:p-8 shadow-2xs ${surfaceClass}`}>
         {/* Type Segmented Control */}
-        <div className="flex items-center justify-between gap-4 mb-6">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
           <div className={`inline-flex p-0.5 rounded-md border ${borderClass} ${subtleSurfaceClass}`}>
             <button
               type="button"
@@ -210,7 +296,7 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
           {/* Automatic Month Routing Indicator */}
           <div className="flex items-center gap-2 text-xs font-mono">
             <span className={`px-2.5 py-1 rounded border ${borderClass} ${subtleSurfaceClass} ${textMuted}`}>
-              {targetMonthExists ? `Board: ${targetMonthName}` : `New Board: ${targetMonthName}`} &bull; W{targetWeek}
+              {targetMonthExists ? targetMonthName : `New: ${targetMonthName}`} &bull; W{targetWeek}
             </span>
           </div>
         </div>
@@ -231,25 +317,23 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
                   <strong>{justAdded.monthName}</strong>
                 </span>
               </div>
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    onSelectMonth(justAdded.monthId);
-                    onNavigateToTab('summary');
-                  }}
-                  className="font-mono font-medium text-amber-500 hover:underline cursor-pointer flex items-center gap-1"
-                >
-                  Open {justAdded.monthName} Board
-                  <ArrowRight className="w-3 h-3" />
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  onSelectMonth(justAdded.monthId);
+                  onNavigateToTab('summary');
+                }}
+                className="font-mono font-medium text-amber-500 hover:underline cursor-pointer flex items-center gap-1"
+              >
+                Open {justAdded.monthName}
+                <ArrowRight className="w-3 h-3" />
+              </button>
             </div>
           )}
 
-          {/* Row 1: Amount & Date */}
+          {/* Row 1: Amount & Modern Date Picker */}
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-5">
-            {/* Amount Input (7 Cols) */}
+            {/* Amount Input (7 Cols) - No spin arrows, no quick preset chips */}
             <div className="sm:col-span-7">
               <label
                 htmlFor="quick-amount-input"
@@ -264,7 +348,8 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
                 <input
                   id="quick-amount-input"
                   type="number"
-                  step="0.01"
+                  inputMode="decimal"
+                  step="any"
                   required
                   value={amount}
                   onChange={(e) => {
@@ -272,29 +357,16 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
                     setError('');
                   }}
                   placeholder="0.00"
-                  className={`w-full pl-9 pr-4 py-2.5 rounded-md text-xl font-mono font-light tabular-nums border ${borderClass} ${subtleSurfaceClass} focus:outline-none focus:ring-1 focus:ring-amber-500`}
+                  className={`w-full pl-9 pr-4 py-2.5 rounded-md text-lg sm:text-xl font-mono font-light tabular-nums border ${borderClass} ${subtleSurfaceClass} focus:outline-none focus:ring-1 focus:ring-amber-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none`}
                 />
-              </div>
-              {/* Quick Amount Chips */}
-              <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                {[100, 250, 500, 1000, 2500].map((preset) => (
-                  <button
-                    key={preset}
-                    type="button"
-                    onClick={() => handleQuickIncrement(preset)}
-                    className={`px-2 py-0.5 rounded text-[11px] font-mono border ${borderClass} ${subtleSurfaceClass} ${textMuted} hover:text-inherit transition-colors cursor-pointer`}
-                  >
-                    +₹{preset}
-                  </button>
-                ))}
               </div>
             </div>
 
-            {/* Date Input (5 Cols) */}
-            <div className="sm:col-span-5">
+            {/* Modern Custom Date Selector (5 Cols) */}
+            <div className="sm:col-span-5 relative" ref={calendarRef}>
               <div className="flex items-center justify-between mb-2">
                 <label
-                  htmlFor="quick-date-input"
+                  htmlFor="quick-date-trigger"
                   className={`text-[11px] font-medium uppercase tracking-wider ${textSubtle} flex items-center gap-1`}
                 >
                   <Calendar className="w-3 h-3" />
@@ -303,7 +375,10 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
                 <div className="flex items-center gap-2 text-[11px] font-mono">
                   <button
                     type="button"
-                    onClick={() => setDate(todayStr)}
+                    onClick={() => {
+                      setDate(todayStr);
+                      setIsCalendarOpen(false);
+                    }}
                     className={`${date === todayStr ? 'text-amber-500 font-medium' : textMuted} hover:underline cursor-pointer`}
                   >
                     Today
@@ -318,17 +393,123 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
                   </button>
                 </div>
               </div>
-              <input
-                id="quick-date-input"
-                type="date"
-                required
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
-                className={`w-full px-3.5 py-2.5 rounded-md text-sm font-mono border ${borderClass} ${subtleSurfaceClass} focus:outline-none focus:ring-1 focus:ring-amber-500`}
-              />
-              <p className={`text-[11px] font-mono ${textSubtle} mt-2`}>
-                Automatically logs into <strong>{targetMonthName}</strong>
-              </p>
+
+              {/* Sleek Date Picker Trigger Button */}
+              <button
+                id="quick-date-trigger"
+                type="button"
+                onClick={() => setIsCalendarOpen((prev) => !prev)}
+                aria-expanded={isCalendarOpen}
+                aria-label="Select date"
+                className={`w-full px-3.5 py-2.5 rounded-md text-sm font-mono border ${borderClass} ${subtleSurfaceClass} flex items-center justify-between gap-2 text-left transition-colors hover:border-amber-500/50 focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer`}
+              >
+                <span className="flex items-center gap-2 truncate">
+                  <Calendar className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                  <span className="tabular-nums font-medium">{formatDisplayDate(date)}</span>
+                </span>
+                <ChevronDown
+                  className={`w-3.5 h-3.5 ${textMuted} transition-transform duration-150 shrink-0 ${
+                    isCalendarOpen ? 'rotate-180' : ''
+                  }`}
+                />
+              </button>
+
+              {/* Modern SaaS Calendar Popover */}
+              {isCalendarOpen && (
+                <div
+                  className={`absolute right-0 left-0 sm:left-auto sm:w-72 mt-2 p-4 rounded-lg border shadow-xl z-50 ${surfaceClass}`}
+                >
+                  {/* Month / Year Navigation Header */}
+                  <div className="flex items-center justify-between mb-3">
+                    <button
+                      type="button"
+                      onClick={handlePrevCalendarMonth}
+                      className={`p-1.5 rounded-md border ${borderClass} ${subtleSurfaceClass} hover:opacity-80 cursor-pointer`}
+                      aria-label="Previous month"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </button>
+
+                    <span className="text-xs font-medium tracking-tight">
+                      {MONTH_FULL_NAMES[viewMonth]} {viewYear}
+                    </span>
+
+                    <button
+                      type="button"
+                      onClick={handleNextCalendarMonth}
+                      className={`p-1.5 rounded-md border ${borderClass} ${subtleSurfaceClass} hover:opacity-80 cursor-pointer`}
+                      aria-label="Next month"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Weekday Labels */}
+                  <div className="grid grid-cols-7 gap-1 text-center mb-1.5">
+                    {WEEKDAYS_SHORT.map((wd) => (
+                      <span
+                        key={wd}
+                        className={`text-[10px] font-mono uppercase tracking-wider ${textSubtle} py-1`}
+                      >
+                        {wd}
+                      </span>
+                    ))}
+                  </div>
+
+                  {/* Calendar Days Grid */}
+                  <div className="grid grid-cols-7 gap-1">
+                    {calendarDays.map((dayNum, idx) => {
+                      if (dayNum === null) {
+                        return <div key={`empty-${idx}`} className="h-8" />;
+                      }
+
+                      const cellDateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(
+                        dayNum
+                      ).padStart(2, '0')}`;
+                      const isSelected = cellDateStr === date;
+                      const isToday = cellDateStr === todayStr;
+
+                      return (
+                        <button
+                          key={cellDateStr}
+                          type="button"
+                          onClick={() => handleSelectCalendarDay(dayNum)}
+                          className={`h-8 rounded-md text-xs font-mono tabular-nums flex items-center justify-center transition-colors cursor-pointer ${
+                            isSelected
+                              ? 'bg-amber-500 text-zinc-950 font-semibold shadow-2xs'
+                              : isToday
+                              ? `border border-amber-500/60 text-amber-500 font-medium`
+                              : `hover:${subtleSurfaceClass}`
+                          }`}
+                        >
+                          {dayNum}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Popover Footer */}
+                  <div className={`mt-3 pt-2.5 border-t ${borderClass} flex items-center justify-between text-[11px] font-mono`}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDate(todayStr);
+                        setIsCalendarOpen(false);
+                      }}
+                      className="text-amber-500 hover:underline cursor-pointer"
+                    >
+                      Jump to Today
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsCalendarOpen(false)}
+                      className={`${textMuted} hover:text-inherit cursor-pointer`}
+                    >
+                      Done
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -348,12 +529,12 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
                 className={`text-[11px] font-mono ${textMuted} hover:text-amber-500 flex items-center gap-1 cursor-pointer transition-colors`}
               >
                 <SlidersHorizontal className="w-3 h-3" />
-                Edit / Customize Categories
+                Edit Categories
               </button>
             </div>
 
             {/* Interactive Category Pills for 1-Tap Selection */}
-            <div className="flex flex-wrap gap-1.5 mb-2.5">
+            <div className="flex flex-wrap gap-1.5">
               {categoriesList.map((cat) => {
                 const isSelected = category === cat;
                 return (
@@ -389,14 +570,14 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
             </select>
           </div>
 
-          {/* Row 3: Small Description */}
+          {/* Row 3: Description */}
           <div>
             <label
               htmlFor="quick-description-input"
               className={`block text-[11px] font-medium uppercase tracking-wider ${textSubtle} mb-2 flex items-center gap-1`}
             >
               <FileText className="w-3 h-3" />
-              Small Description
+              Description
             </label>
             <input
               id="quick-description-input"
@@ -409,13 +590,10 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
           </div>
 
           {/* Submit Action */}
-          <div className={`pt-4 border-t ${borderClass} flex flex-col sm:flex-row sm:items-center justify-between gap-3`}>
-            <span className={`text-xs ${textSubtle}`}>
-              Template columns (Summary, Week 1–5, Transactions, Category) update automatically.
-            </span>
+          <div className={`pt-4 border-t ${borderClass} flex justify-end`}>
             <button
               type="submit"
-              className="px-6 py-2.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 rounded-md text-xs font-medium transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-2xs shrink-0"
+              className="w-full sm:w-auto px-6 py-2.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 rounded-md text-xs font-medium transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-2xs"
             >
               <Plus className="w-4 h-4 stroke-[2.5]" />
               {type === 'expense' ? 'Add Expense' : 'Add Income'}
@@ -424,126 +602,67 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
         </form>
       </div>
 
-      {/* Month Boards Switcher & Recent Activity Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
-        {/* Monthly Boards Directory (5 Cols) */}
-        <div className={`md:col-span-5 border rounded-lg p-5 flex flex-col justify-between ${surfaceClass}`}>
+      {/* Monthly Boards Directory */}
+      <div className={`border rounded-lg p-5 sm:p-6 ${surfaceClass}`}>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
           <div>
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-xs font-medium uppercase tracking-wider">
-                Monthly Boards
-              </h3>
-              <span className={`text-[11px] font-mono ${textSubtle}`}>
-                {Object.keys(months).length} Months
-              </span>
-            </div>
-            <p className={`text-xs ${textMuted} mb-4`}>
-              Select any month to inspect its expenses, or start a new monthly template board.
+            <h3 className="text-xs font-medium uppercase tracking-wider">
+              Monthly Boards ({Object.keys(months).length})
+            </h3>
+            <p className={`text-xs ${textMuted} mt-0.5`}>
+              Select another month to view its expenses or create a new monthly board.
             </p>
-
-            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-              {Object.keys(months)
-                .sort((a, b) => b.localeCompare(a))
-                .map((mId) => {
-                  const isCurrent = mId === activeMonthId;
-                  return (
-                    <div
-                      key={mId}
-                      onClick={() => {
-                        onSelectMonth(mId);
-                        onNavigateToTab('summary');
-                      }}
-                      className={`px-3 py-2 rounded-md border text-xs flex items-center justify-between cursor-pointer transition-colors ${
-                        isCurrent
-                          ? `border-amber-500/40 ${subtleSurfaceClass} font-medium`
-                          : `${borderClass} hover:${subtleSurfaceClass}`
-                      }`}
-                    >
-                      <span className="flex items-center gap-2">
-                        <span>{months[mId]?.monthName || mId}</span>
-                        {isCurrent && (
-                          <span className="text-[10px] font-mono text-amber-500">Active</span>
-                        )}
-                      </span>
-                      <span className={`text-[11px] font-mono ${textMuted} flex items-center gap-1`}>
-                        Open
-                        <ArrowRight className="w-3 h-3" />
-                      </span>
-                    </div>
-                  );
-                })}
-            </div>
           </div>
 
-          {/* Quick Create Next Month Board */}
-          <div className={`mt-4 pt-3 border-t ${borderClass}`}>
-            <button
-              type="button"
-              onClick={() => {
-                // Suggest next month not yet in months, e.g. 2026-12
-                const sorted = Object.keys(months).sort((a, b) => b.localeCompare(a));
-                const latest = sorted[0] || '2026-11';
-                const [yr, mo] = latest.split('-').map(Number);
-                const nextYr = mo === 12 ? yr + 1 : yr;
-                const nextMo = mo === 12 ? 1 : mo + 1;
-                const nextId = `${nextYr}-${String(nextMo).padStart(2, '0')}`;
-                onCreateMonth(nextId);
-              }}
-              className={`w-full py-2 px-3 rounded-md border border-dashed ${borderClass} text-xs font-medium ${textMuted} hover:text-inherit flex items-center justify-center gap-1.5 cursor-pointer transition-colors`}
-            >
-              <FolderPlus className="w-3.5 h-3.5 text-amber-500" />
-              + Create Next Month Board
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => {
+              const sorted = Object.keys(months).sort((a, b) => b.localeCompare(a));
+              const latest = sorted[0] || '2026-11';
+              const [yr, mo] = latest.split('-').map(Number);
+              const nextYr = mo === 12 ? yr + 1 : yr;
+              const nextMo = mo === 12 ? 1 : mo + 1;
+              const nextId = `${nextYr}-${String(nextMo).padStart(2, '0')}`;
+              onCreateMonth(nextId);
+            }}
+            className={`py-2 px-3 rounded-md border border-dashed ${borderClass} text-xs font-medium ${textMuted} hover:text-inherit flex items-center justify-center gap-1.5 cursor-pointer transition-colors shrink-0`}
+          >
+            <FolderPlus className="w-3.5 h-3.5 text-amber-500" />
+            + Create Next Month Board
+          </button>
         </div>
 
-        {/* Recent Activity Feed (7 Cols) */}
-        <div className={`md:col-span-7 border rounded-lg p-5 flex flex-col justify-between ${surfaceClass}`}>
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-xs font-medium uppercase tracking-wider flex items-center gap-1.5">
-                <Clock className="w-3.5 h-3.5 text-zinc-400" />
-                Recent Entries Across Months
-              </h3>
-              <button
-                type="button"
-                onClick={() => onNavigateToTab('transactions')}
-                className={`text-xs font-mono ${textMuted} hover:text-inherit cursor-pointer`}
-              >
-                View All &rarr;
-              </button>
-            </div>
-
-            <div className={`divide-y ${borderClass}`}>
-              {recentTransactions.slice(0, 5).map((tx) => (
-                <div key={tx.id} className="py-2.5 flex items-center justify-between text-xs gap-2">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium truncate">{tx.description}</span>
-                      <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded border ${borderClass} ${subtleSurfaceClass} ${textMuted}`}>
-                        {tx.category}
-                      </span>
-                    </div>
-                    <div className={`text-[11px] font-mono ${textSubtle} mt-0.5`}>
-                      {tx.date} &bull; {months[tx.monthId]?.monthName || formatMonthIdToName(tx.monthId)}
-                    </div>
-                  </div>
-                  <span
-                    className={`font-mono font-medium tabular-nums shrink-0 ${
-                      tx.type === 'income' ? 'text-amber-500' : 'text-inherit'
-                    }`}
-                  >
-                    {tx.type === 'expense' ? '-' : '+'}
-                    {formatINR(tx.amount)}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          {Object.keys(months)
+            .sort((a, b) => b.localeCompare(a))
+            .map((mId) => {
+              const isCurrent = mId === activeMonthId;
+              return (
+                <div
+                  key={mId}
+                  onClick={() => {
+                    onSelectMonth(mId);
+                    onNavigateToTab('summary');
+                  }}
+                  className={`px-3.5 py-2.5 rounded-md border text-xs flex items-center justify-between cursor-pointer transition-colors ${
+                    isCurrent
+                      ? `border-amber-500/40 ${subtleSurfaceClass} font-medium`
+                      : `${borderClass} hover:${subtleSurfaceClass}`
+                  }`}
+                >
+                  <span className="flex items-center gap-2 truncate">
+                    <span className="truncate">{months[mId]?.monthName || mId}</span>
+                    {isCurrent && (
+                      <span className="text-[10px] font-mono text-amber-500 shrink-0">Active</span>
+                    )}
+                  </span>
+                  <span className={`text-[11px] font-mono ${textMuted} flex items-center gap-1 shrink-0 ml-2`}>
+                    View
+                    <ArrowRight className="w-3 h-3" />
                   </span>
                 </div>
-              ))}
-            </div>
-          </div>
-
-          <div className={`mt-4 pt-3 border-t ${borderClass} flex items-center justify-between text-[11px] ${textSubtle}`}>
-            <span>Tip: Pick any past or future date above to log directly into that month.</span>
-          </div>
+              );
+            })}
         </div>
       </div>
     </div>
