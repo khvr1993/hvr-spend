@@ -1,0 +1,6 @@
+{
+  "name": "Smart Expense Tracker & Drive Sync",
+  "description": "Track monthly expenses with planned vs actual budgets, visual analytics dashboards, and sync directly to Google Drive and Excel.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
