@@ -1,6 +1,10 @@
 import React, { useState, useMemo } from 'react';
 import { Transaction, TransactionType } from '../types';
-import { formatINR, calculateWeekNumber } from '../utils/expenseCalculations';
+import {
+  formatINR,
+  calculateWeekNumber,
+  exportTransactionsToCSV,
+} from '../utils/expenseCalculations';
 import {
   Search,
   Plus,
@@ -8,6 +12,7 @@ import {
   Edit2,
   X,
   FileSpreadsheet,
+  Download,
 } from 'lucide-react';
 
 interface TransactionsViewProps {
@@ -177,6 +182,19 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
     }
   };
 
+  const handleDownloadCSV = () => {
+    const csvContent = exportTransactionsToCSV(monthTransactions, monthId);
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `transactions_${monthId}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="space-y-6">
       {/* Search & Rigid Control Bar */}
@@ -252,6 +270,14 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
           >
             <FileSpreadsheet className="w-3.5 h-3.5 text-zinc-400" />
             Import
+          </button>
+          <button
+            onClick={handleDownloadCSV}
+            title="Download transactions CSV for this month"
+            className={`px-3 py-1.5 border ${borderClass} ${subtleSurfaceClass} rounded-md text-xs font-medium hover:opacity-80 transition-opacity flex items-center gap-1.5 cursor-pointer`}
+          >
+            <Download className="w-3.5 h-3.5 text-amber-500" />
+            Download CSV
           </button>
         </div>
       </div>

@@ -10,6 +10,9 @@ import {
   formatMonthIdToName,
   formatDriveFileTitle,
   isDailySyncDue,
+  generateSampleCSVContent,
+  exportTransactionsToCSV,
+  filterDuplicateTransactions,
 } from './expenseCalculations';
 import { Transaction } from '../types';
 
@@ -257,18 +260,76 @@ test('calculateWeeklyMatrix generates accurate breakdown', () => {
   assert.equal(matrix.Food.total, 300);
 });
 
-test('parseCSVTransactions parses CSV lines properly', () => {
+test('parseCSVTransactions parses CSV lines properly and assigns all rows to target Month Code', () => {
   const csv = `Date,Category,Description,Amount,Type
-2026-10-05,Food,Supermarket,₹1250,Expense
+05/09/2026,Food,Supermarket,₹1250,Expense
 2026-10-15,Bills and Debt,Electricity,3400,Expense
-2026-10-01,Paycheck,Salary,250000,Income`;
+01-09-2026,Paycheck,Salary,250000,Income`;
 
-  const items = parseCSVTransactions(csv, '2026-10');
+  const items = parseCSVTransactions(csv, '2026-09');
   assert.equal(items.length, 3);
   assert.equal(items[0].category, 'Food');
   assert.equal(items[0].amount, 1250);
   assert.equal(items[0].type, 'expense');
+  assert.equal(items[0].monthId, '2026-09');
+  assert.equal(items[0].date, '2026-09-05');
+  assert.equal(items[1].monthId, '2026-09');
+  assert.equal(items[1].date, '2026-09-15');
   assert.equal(items[2].category, 'Paycheck');
   assert.equal(items[2].type, 'income');
+  assert.equal(items[2].monthId, '2026-09');
+
+  const sampleCsv = generateSampleCSVContent('2026-08');
+  const sampleItems = parseCSVTransactions(sampleCsv, '2026-08');
+  assert.equal(sampleItems.length, 4);
+  assert.equal(sampleItems[0].monthId, '2026-08');
 });
+
+test('exportTransactionsToCSV exports transactions in exact re-uploadable CSV format and filterDuplicateTransactions skips duplicates', () => {
+  const existing: Transaction[] = [
+    {
+      id: 'tx-1',
+      monthId: '2026-11',
+      date: '2026-11-03',
+      type: 'expense',
+      category: 'Food',
+      description: 'Weekly Groceries',
+      amount: 1250,
+      weekNumber: 1,
+      createdAt: 1,
+    },
+    {
+      id: 'tx-2',
+      monthId: '2026-11',
+      date: '2026-11-01',
+      type: 'income',
+      category: 'Paycheck',
+      description: 'Monthly Salary',
+      amount: 250000,
+      weekNumber: 1,
+      createdAt: 2,
+    },
+  ];
+
+  // Export to CSV
+  const exportedCsv = exportTransactionsToCSV(existing, '2026-11');
+  assert.ok(exportedCsv.startsWith('Date,Category,Description,Amount,Type\n'));
+
+  // Re-upload the same CSV with 1 new row and 1 intra-file duplicate
+  const modifiedCsv = `${exportedCsv}
+2026-11-03,food,weekly groceries,1250,Expense
+2026-11-10,Transportation,Cab to Airport,850,Expense
+2026-11-10,Transportation,Cab to Airport,850,Expense`;
+
+  const parsed = parseCSVTransactions(modifiedCsv, '2026-11');
+  assert.equal(parsed.length, 5);
+
+  const { unique, duplicateCount } = filterDuplicateTransactions(parsed, existing);
+  assert.equal(unique.length, 1);
+  assert.equal(duplicateCount, 4);
+  assert.equal(unique[0].date, '2026-11-10');
+  assert.equal(unique[0].category, 'Transportation');
+  assert.equal(unique[0].description, 'Cab to Airport');
+});
+
 

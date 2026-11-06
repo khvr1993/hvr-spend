@@ -1,19 +1,26 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { Transaction } from '../types';
-import { parseCSVTransactions, calculateWeekNumber } from '../utils/expenseCalculations';
 import {
-  Upload,
+  parseCSVTransactions,
+  calculateWeekNumber,
+  formatMonthIdToName,
+  generateSampleCSVContent,
+  filterDuplicateTransactions,
+} from '../utils/expenseCalculations';
+import {
   FileSpreadsheet,
   Check,
   X,
   ArrowRight,
+  Download,
 } from 'lucide-react';
 
 interface ImportTransactionsModalProps {
   isOpen: boolean;
   onClose: () => void;
   currentMonthId: string;
+  existingTransactions?: Transaction[];
   onImportTransactions: (
     transactions: Transaction[],
     targetMonthId: string,
@@ -26,19 +33,54 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
   isOpen,
   onClose,
   currentMonthId,
+  existingTransactions = [],
   onImportTransactions,
-  isDark = true,
+  isDark = false,
 }) => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [targetMonth, setTargetMonth] = useState('2026-09');
-  const [targetMonthName, setTargetMonthName] = useState('Sep-26 Expenses');
+  const [targetMonth, setTargetMonth] = useState(currentMonthId || '2026-11');
+  const [rawCsvCache, setRawCsvCache] = useState<string>('');
   const [parsedPreview, setParsedPreview] = useState<Partial<Transaction>[]>([]);
+  const [skippedDuplicatesCount, setSkippedDuplicatesCount] = useState<number>(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [activeMode, setActiveMode] = useState<'upload' | 'sample'>('upload');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const existingForTargetMonth = useMemo(
+    () => existingTransactions.filter((t) => t.monthId === targetMonth),
+    [existingTransactions, targetMonth]
+  );
+
+  // Sync default Month Code to active month when modal opens
+  useEffect(() => {
+    if (isOpen && currentMonthId) {
+      setTargetMonth(currentMonthId);
+    }
+  }, [isOpen, currentMonthId]);
+
+  // Re-parse and deduplicate with updated targetMonth if user changes Month Code after selecting a file
+  useEffect(() => {
+    if (rawCsvCache && /^\d{4}-\d{2}$/.test(targetMonth)) {
+      const items = parseCSVTransactions(rawCsvCache, targetMonth);
+      const { unique, duplicateCount } = filterDuplicateTransactions(
+        items,
+        existingForTargetMonth
+      );
+      setParsedPreview(unique);
+      setSkippedDuplicatesCount(duplicateCount);
+      if (unique.length === 0 && duplicateCount > 0) {
+        setErrorMsg(
+          `All ${duplicateCount} transaction(s) in this file already exist in ${targetMonth} (same Date, Category & Description). Duplicates were skipped.`
+        );
+      } else {
+        setErrorMsg(null);
+      }
+    }
+  }, [targetMonth, rawCsvCache, existingForTargetMonth]);
+
   if (!isOpen) return null;
+
+  const derivedMonthName = formatMonthIdToName(targetMonth);
 
   // Surface classes
   const surfaceClass = isDark
@@ -51,129 +93,104 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
 
   const textMuted = isDark ? 'text-zinc-400' : 'text-zinc-500';
   const textSubtle = isDark ? 'text-zinc-500' : 'text-zinc-400';
-  const borderClass = isDark ? 'border-[#262626]' : 'border-[#E5E5E5]';
+  const borderClass = isDark ? 'border-[#262626] divide-[#262626]' : 'border-[#E5E5E5] divide-[#E5E5E5]';
+
+  const handleDownloadSampleCSV = () => {
+    const csvContent = generateSampleCSVContent(targetMonth);
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `sample_expenses_${targetMonth}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setSelectedFile(file);
     setErrorMsg(null);
+    setSkippedDuplicatesCount(0);
     setIsProcessing(true);
 
     try {
-      const buffer = await file.arrayBuffer();
-      const wb = XLSX.read(buffer, { type: 'array' });
+      let csv = '';
+      if (file.name.toLowerCase().endsWith('.csv')) {
+        csv = await file.text();
+      } else {
+        const buffer = await file.arrayBuffer();
+        const wb = XLSX.read(buffer, { type: 'array', cellDates: true });
+        const sheetName =
+          wb.SheetNames.find((n) => n.toLowerCase().includes('transaction')) ||
+          wb.SheetNames[0];
+        const ws = wb.Sheets[sheetName];
+        csv = XLSX.utils.sheet_to_csv(ws, { dateNF: 'yyyy-mm-dd' });
+      }
 
-      const sheetName =
-        wb.SheetNames.find((n) => n.toLowerCase().includes('transaction')) ||
-        wb.SheetNames[0];
-      const ws = wb.Sheets[sheetName];
-      const csv = XLSX.utils.sheet_to_csv(ws);
-
+      setRawCsvCache(csv);
       const items = parseCSVTransactions(csv, targetMonth);
       if (items.length === 0) {
-        throw new Error('No valid transactions parsed. Ensure columns include Date, Category, Amount.');
+        throw new Error(
+          'No valid transactions parsed. Download the Sample CSV to see the required columns (Date, Category, Description, Amount, Type).'
+        );
       }
-      setParsedPreview(items);
+
+      const { unique, duplicateCount } = filterDuplicateTransactions(
+        items,
+        existingForTargetMonth
+      );
+      setParsedPreview(unique);
+      setSkippedDuplicatesCount(duplicateCount);
+      if (unique.length === 0 && duplicateCount > 0) {
+        setErrorMsg(
+          `All ${duplicateCount} transaction(s) in this file already exist in ${targetMonth} (same Date, Category & Description). Duplicates were skipped.`
+        );
+      }
     } catch (err: any) {
       setErrorMsg(err?.message || 'Failed to parse file');
       setParsedPreview([]);
+      setSkippedDuplicatesCount(0);
+      setRawCsvCache('');
     } finally {
       setIsProcessing(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
   };
 
-  const handleLoadSamplePreviousMonth = () => {
-    const sepTxs: Partial<Transaction>[] = [
-      {
-        date: '2026-09-01',
-        type: 'income',
-        category: 'Paycheck',
-        description: 'September Monthly Salary',
-        amount: 250000,
-        weekNumber: 1,
-        monthId: '2026-09',
-      },
-      {
-        date: '2026-09-02',
-        type: 'expense',
-        category: 'Bills and Debt',
-        description: 'Housing rent payment',
-        amount: 19000,
-        weekNumber: 1,
-        monthId: '2026-09',
-      },
-      {
-        date: '2026-09-05',
-        type: 'expense',
-        category: 'Food',
-        description: 'Supermarket supplies',
-        amount: 3200,
-        weekNumber: 1,
-        monthId: '2026-09',
-      },
-      {
-        date: '2026-09-10',
-        type: 'expense',
-        category: 'Transportation',
-        description: 'Monthly metro & transit',
-        amount: 4500,
-        weekNumber: 2,
-        monthId: '2026-09',
-      },
-      {
-        date: '2026-09-15',
-        type: 'expense',
-        category: 'Shopping',
-        description: 'Hardware accessories',
-        amount: 5400,
-        weekNumber: 3,
-        monthId: '2026-09',
-      },
-      {
-        date: '2026-09-22',
-        type: 'expense',
-        category: 'Guilt free',
-        description: 'Weekend dinner',
-        amount: 3800,
-        weekNumber: 4,
-        monthId: '2026-09',
-      },
-      {
-        date: '2026-09-28',
-        type: 'expense',
-        category: 'Entertainment & Leisure',
-        description: 'Entertainment passes',
-        amount: 2200,
-        weekNumber: 4,
-        monthId: '2026-09',
-      },
-    ];
-
-    setTargetMonth('2026-09');
-    setTargetMonthName('Sep-26 Expenses');
-    setParsedPreview(sepTxs);
-    setSelectedFile(null);
-    setErrorMsg(null);
-  };
-
   const handleConfirmImport = () => {
-    if (parsedPreview.length === 0) return;
+    if (parsedPreview.length === 0 || !/^\d{4}-\d{2}$/.test(targetMonth)) return;
 
-    const finalTransactions: Transaction[] = parsedPreview.map((item, idx) => ({
-      id: `imported-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`,
-      monthId: item.monthId || targetMonth,
-      date: item.date || `${targetMonth}-01`,
-      type: item.type || 'expense',
-      category: item.category || 'Other',
-      description: item.description || 'Imported item',
-      amount: item.amount || 0,
-      weekNumber: item.weekNumber || calculateWeekNumber(item.date || `${targetMonth}-01`),
-      notes: item.notes || 'Imported ledger',
-      createdAt: Date.now() + idx,
-    }));
+    const finalTransactions: Transaction[] = parsedPreview.map((item, idx) => {
+      const alignedDate =
+        item.date && item.date.startsWith(targetMonth)
+          ? item.date
+          : `${targetMonth}-${(item.date || '01').slice(-2).replace(/[^0-9]/g, '') || '01'}`;
 
-    onImportTransactions(finalTransactions, targetMonth, targetMonthName);
+      return {
+        id: `imported-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`,
+        monthId: targetMonth,
+        date: alignedDate,
+        type: item.type || 'expense',
+        category: item.category || 'Other',
+        description: item.description || 'Imported item',
+        amount: Number(item.amount) || 0,
+        weekNumber: calculateWeekNumber(alignedDate),
+        notes: item.notes || 'Imported CSV/Excel',
+        createdAt: Date.now() + idx,
+      };
+    });
+
+    onImportTransactions(finalTransactions, targetMonth, derivedMonthName);
+    setSelectedFile(null);
+    setParsedPreview([]);
+    setSkippedDuplicatesCount(0);
+    setRawCsvCache('');
+    setErrorMsg(null);
     onClose();
   };
 
@@ -184,15 +201,16 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
         <div className={`px-6 py-4 border-b ${borderClass} flex items-center justify-between ${subtleSurfaceClass}`}>
           <div>
             <h3 className="text-sm font-medium tracking-tight">
-              Import Previous Ledger Data
+              Import Transactions
             </h3>
             <p className={`text-xs ${textMuted} mt-0.5`}>
-              Upload Excel (.xlsx, .xls) or CSV records to build historical analytics
+              Select a Month Code and upload your CSV or Excel (.xlsx) file
             </p>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className={`${textSubtle} hover:${textMuted} p-1`}
+            className={`${textSubtle} hover:${textMuted} p-1 cursor-pointer`}
           >
             <X className="w-4 h-4" />
           </button>
@@ -200,85 +218,66 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
 
         {/* Content */}
         <div className="p-6 space-y-5 overflow-y-auto">
-          {/* Target Month Identifier */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={`block text-[11px] font-medium uppercase tracking-wider ${textSubtle} mb-1`}>
-                Month Code
+          {/* Month Code Selector & Download Sample CSV Button */}
+          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+            <div className="flex-1">
+              <label
+                htmlFor="import-month-code"
+                className={`block text-[11px] font-medium uppercase tracking-wider ${textSubtle} mb-1.5`}
+              >
+                Month Code (YYYY-MM)
               </label>
-              <input
-                type="text"
-                value={targetMonth}
-                onChange={(e) => setTargetMonth(e.target.value)}
-                placeholder="YYYY-MM"
-                className={`w-full px-3 py-1.5 rounded-md text-xs font-mono border ${borderClass} ${subtleSurfaceClass} focus:outline-none focus:ring-1 focus:ring-amber-500/50`}
-              />
+              <div className="flex items-center gap-2">
+                <input
+                  id="import-month-code"
+                  type="month"
+                  value={targetMonth}
+                  onChange={(e) => setTargetMonth(e.target.value)}
+                  className={`w-full px-3 py-2 rounded-md text-xs font-mono border ${borderClass} ${subtleSurfaceClass} focus:outline-none focus:ring-1 focus:ring-amber-500`}
+                />
+              </div>
+              <span className={`block text-[11px] font-mono ${textMuted} mt-1`}>
+                Target Board: <strong>{derivedMonthName}</strong>
+              </span>
             </div>
-            <div>
-              <label className={`block text-[11px] font-medium uppercase tracking-wider ${textSubtle} mb-1`}>
-                Ledger Label
-              </label>
-              <input
-                type="text"
-                value={targetMonthName}
-                onChange={(e) => setTargetMonthName(e.target.value)}
-                placeholder="e.g. Sep-26 Expenses"
-                className={`w-full px-3 py-1.5 rounded-md text-xs border ${borderClass} ${subtleSurfaceClass} focus:outline-none focus:ring-1 focus:ring-amber-500/50`}
-              />
-            </div>
-          </div>
 
-          {/* Mode Switcher */}
-          <div className={`flex items-center gap-4 border-b ${borderClass} pb-2 text-xs font-mono`}>
             <button
-              onClick={() => setActiveMode('upload')}
-              className={`pb-1 border-b transition-colors cursor-pointer ${
-                activeMode === 'upload'
-                  ? 'border-amber-500 text-amber-500'
-                  : `border-transparent ${textMuted} hover:text-inherit`
-              }`}
+              type="button"
+              onClick={handleDownloadSampleCSV}
+              className={`inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-xs font-medium border ${borderClass} ${subtleSurfaceClass} hover:border-amber-500/50 transition-colors cursor-pointer shrink-0 sm:mb-5`}
             >
-              Upload Local File
-            </button>
-            <button
-              onClick={() => {
-                setActiveMode('sample');
-                handleLoadSamplePreviousMonth();
-              }}
-              className={`pb-1 border-b transition-colors cursor-pointer ${
-                activeMode === 'sample'
-                  ? 'border-amber-500 text-amber-500'
-                  : `border-transparent ${textMuted} hover:text-inherit`
-              }`}
-            >
-              Load Sample (Sep-26)
+              <Download className="w-3.5 h-3.5 text-amber-500" />
+              Download Sample CSV
             </button>
           </div>
 
-          {activeMode === 'upload' && (
-            <div
-              onClick={() => fileInputRef.current?.click()}
-              className={`border border-dashed ${borderClass} hover:border-zinc-500 ${subtleSurfaceClass} rounded-lg p-8 text-center cursor-pointer transition-colors`}
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".xlsx, .xls, .csv"
-                onChange={handleFileChange}
-                className="hidden"
-              />
-              <FileSpreadsheet className={`w-8 h-8 ${textSubtle} mx-auto mb-2`} />
-              <p className="text-xs font-medium">
-                {selectedFile ? selectedFile.name : 'Select or drop Excel (.xlsx) / CSV file'}
-              </p>
-              <p className={`text-[11px] ${textSubtle} mt-1 font-mono`}>
-                Columns: Date, Category, Amount, Description
-              </p>
-            </div>
-          )}
+          {/* File Dropzone / Picker */}
+          <div
+            onClick={() => fileInputRef.current?.click()}
+            className={`border border-dashed ${borderClass} hover:border-amber-500/60 ${subtleSurfaceClass} rounded-lg p-7 text-center cursor-pointer transition-colors`}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv, .xlsx, .xls"
+              onChange={handleFileChange}
+              className="hidden"
+            />
+            <FileSpreadsheet className={`w-7 h-7 ${textSubtle} mx-auto mb-2`} />
+            <p className="text-xs font-medium">
+              {isProcessing
+                ? 'Parsing file...'
+                : selectedFile
+                ? selectedFile.name
+                : 'Click to select CSV or Excel (.xlsx) file'}
+            </p>
+            <p className={`text-[11px] ${textSubtle} mt-1 font-mono`}>
+              Format: Date, Category, Description, Amount, Type
+            </p>
+          </div>
 
           {errorMsg && (
-            <div className={`p-3 rounded-md border ${borderClass} ${subtleSurfaceClass} text-xs text-amber-500 font-mono`}>
+            <div className={`p-3 rounded-md border border-amber-500/40 ${subtleSurfaceClass} text-xs text-amber-500 font-mono`}>
               {errorMsg}
             </div>
           )}
@@ -286,12 +285,16 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
           {/* Parsed Preview */}
           {parsedPreview.length > 0 && (
             <div className="space-y-2">
-              <div className="flex items-center justify-between text-xs font-mono">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
                 <span className="flex items-center gap-1.5 font-medium">
                   <Check className="w-3.5 h-3.5 text-amber-500 stroke-[2.5]" />
-                  Parsed {parsedPreview.length} records
+                  Ready to import {parsedPreview.length} new transaction{parsedPreview.length === 1 ? '' : 's'}
                 </span>
-                <span className={textMuted}>Target: {targetMonthName}</span>
+                <span className={textMuted}>
+                  {skippedDuplicatesCount > 0
+                    ? `${skippedDuplicatesCount} duplicate(s) skipped • Month: ${targetMonth}`
+                    : `Month: ${targetMonth}`}
+                </span>
               </div>
 
               <div className={`max-h-44 overflow-y-auto divide-y ${borderClass} border ${borderClass} rounded-md`}>
@@ -300,13 +303,14 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
                     key={idx}
                     className={`p-2.5 text-xs flex items-center justify-between ${subtleSurfaceClass}`}
                   >
-                    <div>
-                      <span className="font-medium">{item.description}</span>
-                      <span className={`text-[11px] font-mono ${textSubtle} ml-3`}>{item.date}</span>
-                      <span className={`block text-[10px] ${textSubtle}`}>{item.category}</span>
+                    <div className="min-w-0 pr-2">
+                      <span className="font-medium truncate block">{item.description}</span>
+                      <span className={`text-[10px] font-mono ${textSubtle}`}>
+                        {item.date} &bull; {item.category}
+                      </span>
                     </div>
-                    <span className="font-mono font-medium tabular-nums">
-                      {item.type === 'income' ? '+' : '-'}₹{item.amount?.toFixed(2)}
+                    <span className="font-mono font-medium tabular-nums shrink-0">
+                      {item.type === 'income' ? '+' : '-'}₹{Number(item.amount || 0).toFixed(2)}
                     </span>
                   </div>
                 ))}
@@ -318,21 +322,23 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
         {/* Footer */}
         <div className={`px-6 py-3 border-t ${borderClass} ${subtleSurfaceClass} flex items-center justify-between`}>
           <button
+            type="button"
             onClick={onClose}
             className={`px-3 py-1.5 text-xs font-mono ${textMuted} hover:text-inherit cursor-pointer`}
           >
             Cancel
           </button>
           <button
+            type="button"
             onClick={handleConfirmImport}
             disabled={parsedPreview.length === 0}
-            className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 ${
               parsedPreview.length > 0
-                ? 'bg-amber-500 hover:bg-amber-400 text-zinc-950 shadow-2xs'
-                : 'opacity-40 bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                ? 'bg-amber-500 hover:bg-amber-400 text-zinc-950 shadow-2xs cursor-pointer'
+                : 'opacity-40 bg-zinc-400 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-500 cursor-not-allowed'
             }`}
           >
-            Import Into Ledger
+            Import {parsedPreview.length > 0 ? `(${parsedPreview.length})` : ''} to {targetMonth}
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>

@@ -263,25 +263,110 @@ export function calculateWeeklyMatrix(
 }
 
 /**
- * Parse CSV text into Transaction objects
+ * Parse a raw date string and align it with the target defaultMonthId (YYYY-MM)
+ */
+function normalizeImportedDate(rawDate: string, defaultMonthId: string): string {
+  const cleanMonth = /^\d{4}-\d{2}$/.test(defaultMonthId)
+    ? defaultMonthId
+    : new Date().toISOString().slice(0, 7);
+
+  if (!rawDate || !rawDate.trim()) {
+    return `${cleanMonth}-01`;
+  }
+
+  const trimmed = rawDate.trim();
+  let day = 1;
+
+  // Case 1: YYYY-MM-DD or YYYY/MM/DD
+  const isoMatch = trimmed.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (isoMatch) {
+    day = parseInt(isoMatch[3], 10);
+  } else {
+    // Case 2: DD-MM-YYYY or DD/MM/YYYY or MM/DD/YYYY
+    const dmyMatch = trimmed.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/);
+    if (dmyMatch) {
+      const first = parseInt(dmyMatch[1], 10);
+      const second = parseInt(dmyMatch[2], 10);
+      // If first <= 31 and second <= 12, treat as DD/MM/YYYY; if second > 12, treat as MM/DD/YYYY
+      day = second > 12 ? second : first;
+    } else {
+      // Case 3: Standard Date.parse fallback
+      const parsed = new Date(trimmed);
+      if (!isNaN(parsed.getTime())) {
+        day = parsed.getDate();
+      }
+    }
+  }
+
+  const [yr, mo] = cleanMonth.split('-').map(Number);
+  const maxDaysInTargetMonth = new Date(yr || 2026, mo || 1, 0).getDate();
+  const clampedDay = Math.min(Math.max(1, day || 1), maxDaysInTargetMonth);
+  return `${cleanMonth}-${String(clampedDay).padStart(2, '0')}`;
+}
+
+/**
+ * Generates sample CSV content for a given YYYY-MM month code
+ */
+export function generateSampleCSVContent(monthId: string = '2026-11'): string {
+  const cleanMonth = /^\d{4}-\d{2}$/.test(monthId) ? monthId : '2026-11';
+  return [
+    'Date,Category,Description,Amount,Type',
+    `${cleanMonth}-01,Paycheck,Monthly Salary,250000,Income`,
+    `${cleanMonth}-03,Food,Weekly Groceries,1250,Expense`,
+    `${cleanMonth}-07,Transportation,Metro & Fuel,850,Expense`,
+    `${cleanMonth}-12,Bills and Debt,Electricity & Internet,3400,Expense`,
+  ].join('\n');
+}
+
+/**
+ * Parse CSV text into Transaction objects assigned to defaultMonthId
  */
 export function parseCSVTransactions(csvText: string, defaultMonthId: string): Partial<Transaction>[] {
-  const lines = csvText.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  const lines = csvText
+    .replace(/^\uFEFF/, '') // Strip UTF-8 BOM if present
+    .split(/\r?\n/)
+    .filter((l) => l.trim().length > 0);
   if (lines.length === 0) return [];
+
+  const targetMonthId = /^\d{4}-\d{2}$/.test(defaultMonthId)
+    ? defaultMonthId
+    : new Date().toISOString().slice(0, 7);
 
   // Inspect headers
   const headerLine = lines[0].toLowerCase();
   const headers = headerLine.split(',').map((h) => h.trim().replace(/^["']|["']$/g, ''));
 
-  const dateIdx = headers.findIndex((h) => h.includes('date'));
+  const dateIdx = headers.findIndex((h) => h.includes('date') || h === 'day');
   const categoryIdx = headers.findIndex((h) => h.includes('cat'));
-  const descIdx = headers.findIndex((h) => h.includes('desc') || h.includes('item') || h.includes('detail') || h.includes('note'));
-  const amountIdx = headers.findIndex((h) => h.includes('amt') || h.includes('amount') || h.includes('cost') || h.includes('price'));
+  const descIdx = headers.findIndex(
+    (h) =>
+      h.includes('desc') ||
+      h.includes('item') ||
+      h.includes('detail') ||
+      h.includes('note') ||
+      h.includes('particular') ||
+      h.includes('narration') ||
+      h.includes('name')
+  );
+  const amountIdx = headers.findIndex(
+    (h) =>
+      h.includes('amt') ||
+      h.includes('amount') ||
+      h.includes('cost') ||
+      h.includes('price') ||
+      h.includes('value') ||
+      h.includes('spend') ||
+      h.includes('debit')
+  );
   const typeIdx = headers.findIndex((h) => h.includes('type'));
+
+  // Determine if line 0 is a header row or data row
+  const hasRecognizedHeader = dateIdx >= 0 || categoryIdx >= 0 || amountIdx >= 0 || descIdx >= 0;
+  const startIdx = hasRecognizedHeader ? 1 : 0;
 
   const result: Partial<Transaction>[] = [];
 
-  for (let i = 1; i < lines.length; i++) {
+  for (let i = startIdx; i < lines.length; i++) {
     // Simple CSV parser supporting quotes
     const row: string[] = [];
     let current = '';
@@ -301,38 +386,120 @@ export function parseCSVTransactions(csvText: string, defaultMonthId: string): P
 
     if (row.length === 0 || row.every((c) => !c)) continue;
 
-    const rawDate = dateIdx >= 0 ? row[dateIdx] : '';
-    const rawCat = categoryIdx >= 0 ? row[categoryIdx] : 'Unplanned';
-    const rawDesc = descIdx >= 0 ? row[descIdx] : 'Imported transaction';
-    const rawAmt = amountIdx >= 0 ? row[amountIdx] : '0';
+    const rawDate = dateIdx >= 0 ? row[dateIdx] : !hasRecognizedHeader ? row[0] : '';
+    const rawCat = categoryIdx >= 0 ? row[categoryIdx] : !hasRecognizedHeader ? row[1] : 'Other';
+    const rawDesc = descIdx >= 0 ? row[descIdx] : !hasRecognizedHeader ? row[2] : rawCat || 'Imported transaction';
+    const rawAmt = amountIdx >= 0 ? row[amountIdx] : !hasRecognizedHeader ? row[3] || row[2] : '0';
     const rawType = typeIdx >= 0 ? row[typeIdx]?.toLowerCase() : '';
 
-    // Clean amount (strip currency symbols and commas)
-    const cleanedAmt = parseFloat(rawAmt.replace(/[^0-9.-]/g, '')) || 0;
-    if (cleanedAmt <= 0) continue;
+    // Clean amount (strip currency symbols and commas, support negative numbers as positive magnitudes)
+    const numericAmt = Math.abs(parseFloat((rawAmt || '0').replace(/[^0-9.-]/g, '')) || 0);
+    if (numericAmt <= 0) continue;
 
-    // Normalize date YYYY-MM-DD
-    let normalizedDate = new Date().toISOString().slice(0, 10);
-    if (rawDate) {
-      const parsedDate = new Date(rawDate);
-      if (!isNaN(parsedDate.getTime())) {
-        normalizedDate = parsedDate.toISOString().slice(0, 10);
-      }
-    }
-
-    const monthId = normalizedDate.slice(0, 7) || defaultMonthId;
-    const isIncome = rawType.includes('income') || rawCat.toLowerCase().includes('paycheck') || rawCat.toLowerCase().includes('salary');
+    // Normalize date into the selected targetMonthId (YYYY-MM-DD)
+    const normalizedDate = normalizeImportedDate(rawDate, targetMonthId);
+    const isIncome =
+      rawType.includes('income') ||
+      rawType.includes('credit') ||
+      (rawCat || '').toLowerCase().includes('paycheck') ||
+      (rawCat || '').toLowerCase().includes('salary');
 
     result.push({
       date: normalizedDate,
-      category: rawCat || 'Other',
-      description: rawDesc || 'Imported item',
-      amount: cleanedAmt,
+      category: (rawCat && rawCat.trim()) || 'Other',
+      description: (rawDesc && rawDesc.trim()) || (rawCat && rawCat.trim()) || 'Imported item',
+      amount: numericAmt,
       type: isIncome ? 'income' : 'expense',
       weekNumber: calculateWeekNumber(normalizedDate),
-      monthId,
+      monthId: targetMonthId,
     });
   }
 
   return result;
 }
+
+/**
+ * Generates a unique normalized signature for duplicate detection based on Date, Category, and Description
+ */
+export function getTransactionSignature(item: {
+  date?: string;
+  category?: string;
+  description?: string;
+}): string {
+  const datePart = (item.date || '').trim();
+  const categoryPart = (item.category || '').trim().toLowerCase();
+  const descPart = (item.description || '').trim().toLowerCase();
+  return `${datePart}|${categoryPart}|${descPart}`;
+}
+
+/**
+ * Filters out duplicate transactions that match the same (Date, Category, Description)
+ * either against existing transactions in the target month or within the incoming list itself.
+ */
+export function filterDuplicateTransactions<
+  T extends { date?: string; category?: string; description?: string }
+>(
+  incoming: T[],
+  existingMonthTransactions: { date?: string; category?: string; description?: string }[] = []
+): { unique: T[]; duplicateCount: number } {
+  const seenSignatures = new Set<string>(
+    existingMonthTransactions.map((t) => getTransactionSignature(t))
+  );
+
+  const unique: T[] = [];
+  let duplicateCount = 0;
+
+  for (const item of incoming) {
+    const sig = getTransactionSignature(item);
+    if (seenSignatures.has(sig)) {
+      duplicateCount += 1;
+    } else {
+      seenSignatures.add(sig);
+      unique.push(item);
+    }
+  }
+
+  return { unique, duplicateCount };
+}
+
+/**
+ * Escapes a single CSV field if it contains commas, quotes, or newlines
+ */
+function escapeCSVField(value: string | number): string {
+  const str = String(value ?? '');
+  if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+/**
+ * Exports transactions for a given month into a clean CSV string matching the import format:
+ * Date,Category,Description,Amount,Type
+ */
+export function exportTransactionsToCSV(
+  transactions: Transaction[],
+  monthId?: string
+): string {
+  const filtered = monthId
+    ? transactions.filter((t) => t.monthId === monthId)
+    : [...transactions];
+
+  const sorted = [...filtered].sort((a, b) => a.date.localeCompare(b.date));
+
+  const header = 'Date,Category,Description,Amount,Type';
+  const rows = sorted.map((t) => {
+    const typeLabel = t.type === 'income' ? 'Income' : 'Expense';
+    return [
+      escapeCSVField(t.date),
+      escapeCSVField(t.category),
+      escapeCSVField(t.description),
+      escapeCSVField(t.amount),
+      escapeCSVField(typeLabel),
+    ].join(',');
+  });
+
+  return [header, ...rows].join('\n');
+}
+
+

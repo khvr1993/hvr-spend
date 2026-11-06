@@ -21,6 +21,7 @@ import {
   getMonthIdFromDate,
   formatMonthIdToName,
   isDailySyncDue,
+  filterDuplicateTransactions,
   DEFAULT_EXPENSE_CATEGORIES,
   DEFAULT_INCOME_CATEGORIES,
 } from './utils/expenseCalculations';
@@ -66,9 +67,10 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('home');
   const [activeMonthId, setActiveMonthId] = useState<string>(INITIAL_MONTH_ID);
 
-  // Month Budgets registry
+  // Month Budgets registry (fresh, clean state with current month only)
   const [months, setMonths] = useState<Record<string, MonthlyBudget>>(() => {
-    const saved = localStorage.getItem('expense_app_months');
+    localStorage.removeItem('expense_app_months');
+    const saved = localStorage.getItem('hvr_expense_months_clean_v1');
     if (saved) {
       try {
         return JSON.parse(saved);
@@ -77,20 +79,20 @@ export default function App() {
       }
     }
     return {
-      '2026-11': {
+      [INITIAL_MONTH_ID]: {
         monthId: INITIAL_MONTH_ID,
         monthName: INITIAL_MONTH_NAME,
         startBalance: 0,
-        expenseBudgets: INITIAL_EXPENSE_BUDGETS_NOV,
-        incomeBudgets: INITIAL_INCOME_BUDGETS_NOV,
+        expenseBudgets: { ...INITIAL_EXPENSE_BUDGETS_NOV },
+        incomeBudgets: { ...INITIAL_INCOME_BUDGETS_NOV },
       },
-      '2026-10': INITIAL_MONTH_OCT,
     };
   });
 
-  // Transactions list
+  // Transactions list (fresh, clean state with zero dummy entries)
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
-    const saved = localStorage.getItem('expense_app_transactions');
+    localStorage.removeItem('expense_app_transactions');
+    const saved = localStorage.getItem('hvr_expense_transactions_clean_v1');
     if (saved) {
       try {
         return JSON.parse(saved);
@@ -98,7 +100,7 @@ export default function App() {
         console.error('Failed to parse transactions:', e);
       }
     }
-    return [...INITIAL_TRANSACTIONS_NOV, ...INITIAL_TRANSACTIONS_OCT];
+    return [];
   });
 
   // Auth & Drive
@@ -156,11 +158,11 @@ export default function App() {
 
   // Persist to local storage
   useEffect(() => {
-    localStorage.setItem('expense_app_months', JSON.stringify(months));
+    localStorage.setItem('hvr_expense_months_clean_v1', JSON.stringify(months));
   }, [months]);
 
   useEffect(() => {
-    localStorage.setItem('expense_app_transactions', JSON.stringify(transactions));
+    localStorage.setItem('hvr_expense_transactions_clean_v1', JSON.stringify(transactions));
   }, [transactions]);
 
   // Current active budget config (uses template if month not yet registered)
@@ -366,16 +368,15 @@ export default function App() {
 
   const handleResetToDefaults = () => {
     setMonths({
-      '2026-11': {
+      [INITIAL_MONTH_ID]: {
         monthId: INITIAL_MONTH_ID,
         monthName: INITIAL_MONTH_NAME,
         startBalance: 0,
-        expenseBudgets: INITIAL_EXPENSE_BUDGETS_NOV,
-        incomeBudgets: INITIAL_INCOME_BUDGETS_NOV,
+        expenseBudgets: { ...INITIAL_EXPENSE_BUDGETS_NOV },
+        incomeBudgets: { ...INITIAL_INCOME_BUDGETS_NOV },
       },
-      '2026-10': INITIAL_MONTH_OCT,
     });
-    setTransactions([...INITIAL_TRANSACTIONS_NOV, ...INITIAL_TRANSACTIONS_OCT]);
+    setTransactions([]);
   };
 
   // Create a new month board explicitly
@@ -394,28 +395,39 @@ export default function App() {
     setActiveTab('summary');
   };
 
-  // Import handler
+  // Import handler: always assigns imported transactions to targetMonthId and switches to that month
   const handleImportTransactions = (
     imported: Transaction[],
     targetMonthId: string,
     targetMonthName: string
   ) => {
-    if (!months[targetMonthId]) {
-      setMonths((prev) => ({
+    const resolvedMonthName = targetMonthName || formatMonthIdToName(targetMonthId);
+    setMonths((prev) => {
+      if (prev[targetMonthId]) return prev;
+      return {
         ...prev,
         [targetMonthId]: {
           monthId: targetMonthId,
-          monthName: targetMonthName,
+          monthName: resolvedMonthName,
           startBalance: 0,
-          expenseBudgets: { ... currentBudget.expenseBudgets },
-          incomeBudgets: { ... currentBudget.incomeBudgets },
+          expenseBudgets: { ...currentBudget.expenseBudgets },
+          incomeBudgets: { ...currentBudget.incomeBudgets },
         },
-      }));
-    }
+      };
+    });
 
-    setTransactions((prev) => [...imported, ...prev]);
+    const normalizedImported = imported.map((t) => ({
+      ...t,
+      monthId: targetMonthId,
+    }));
+
+    setTransactions((prev) => {
+      const existingInMonth = prev.filter((t) => t.monthId === targetMonthId);
+      const { unique } = filterDuplicateTransactions(normalizedImported, existingInMonth);
+      return [...unique, ...prev];
+    });
     setActiveMonthId(targetMonthId);
-    setActiveTab('dashboard');
+    setActiveTab('transactions');
   };
 
   const handleImportFromDriveFile = async (file: DriveFileInfo) => {
@@ -998,6 +1010,7 @@ export default function App() {
         isOpen={isImportModalOpen}
         onClose={() => setIsImportModalOpen(false)}
         currentMonthId={activeMonthId}
+        existingTransactions={transactions}
         onImportTransactions={handleImportTransactions}
         isDark={isDark}
       />
