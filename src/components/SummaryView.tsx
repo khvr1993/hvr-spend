@@ -22,11 +22,6 @@ export const SummaryView: React.FC<SummaryViewProps> = ({
       ? Math.min(100, (summary.actualExpenses / summary.plannedExpenses) * 100)
       : 0;
 
-  const incomePercentage =
-    summary.plannedIncome > 0
-      ? Math.min(100, (summary.actualIncome / summary.plannedIncome) * 100)
-      : 0;
-
   // Surface classes based on theme
   const surfaceClass = isDark
     ? 'bg-[#121214] border-[#262626] text-zinc-100'
@@ -74,7 +69,7 @@ export const SummaryView: React.FC<SummaryViewProps> = ({
       </div>
 
       {/* Planned vs Actual Structural Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+      <div className="grid grid-cols-1 gap-4 sm:gap-6">
         {/* Expenses Meter Card */}
         <div className={`border rounded-lg p-5 sm:p-6 ${surfaceClass}`}>
           <div className="flex items-center justify-between mb-4 gap-2">
@@ -112,48 +107,10 @@ export const SummaryView: React.FC<SummaryViewProps> = ({
             ></div>
           </div>
         </div>
-
-        {/* Income Meter Card */}
-        <div className={`border rounded-lg p-5 sm:p-6 ${surfaceClass}`}>
-          <div className="flex items-center justify-between mb-4 gap-2">
-            <div>
-              <p className="text-sm font-medium">Income Overview</p>
-              <p className={`text-xs ${textMuted}`}>
-                {incomePercentage.toFixed(1)}% realized
-              </p>
-            </div>
-            <span className={`text-xs font-mono ${textMuted} shrink-0`}>
-              Target: {formatINR(summary.plannedIncome)}
-            </span>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4 text-xs font-mono my-3">
-            <div>
-              <span className={`block text-[11px] uppercase tracking-wider ${textSubtle}`}>Actual</span>
-              <span className="text-base sm:text-lg font-medium tabular-nums">
-                {formatINR(summary.actualIncome)}
-              </span>
-            </div>
-            <div className="text-right">
-              <span className={`block text-[11px] uppercase tracking-wider ${textSubtle}`}>Variance</span>
-              <span className={`text-base sm:text-lg font-medium tabular-nums ${textMuted}`}>
-                {formatINR(summary.incomeDiff)}
-              </span>
-            </div>
-          </div>
-
-          {/* Minimal 4px hairline progress track */}
-          <div className={`h-1.5 w-full rounded-sm overflow-hidden ${subtleSurfaceClass}`}>
-            <div
-              className={`h-full ${isDark ? 'bg-zinc-300' : 'bg-zinc-700'} transition-all duration-500`}
-              style={{ width: `${Math.min(100, incomePercentage)}%` }}
-            ></div>
-          </div>
-        </div>
       </div>
 
-      {/* Side-by-Side Read-Only Financial Ledgers */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* Read-Only Financial Ledger */}
+      <div className="grid grid-cols-1 gap-6">
         {/* Expense Category Ledger */}
         <div className={`border rounded-lg overflow-hidden ${surfaceClass}`}>
           <div className={`px-4 sm:px-6 py-4 border-b ${borderClass}`}>
@@ -222,65 +179,6 @@ export const SummaryView: React.FC<SummaryViewProps> = ({
                     </tr>
                   );
                 })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Income Category Ledger */}
-        <div className={`border rounded-lg overflow-hidden ${surfaceClass}`}>
-          <div className={`px-4 sm:px-6 py-4 border-b ${borderClass}`}>
-            <h3 className="text-sm font-medium tracking-tight">
-              Income Categories
-            </h3>
-            <p className={`text-xs ${textMuted}`}>
-              Planned vs. realized earnings
-            </p>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className={`border-b ${borderClass} ${subtleSurfaceClass} ${textMuted} font-medium tracking-wider uppercase text-[10px]`}>
-                  <th className="py-2.5 px-4 sm:px-6">Category</th>
-                  <th className="py-2.5 px-3 sm:px-4 text-right">Planned</th>
-                  <th className="py-2.5 px-3 sm:px-4 text-right">Actual</th>
-                  <th className="py-2.5 px-4 sm:px-6 text-right">Diff</th>
-                </tr>
-                {/* Totals Row */}
-                <tr className={`border-b ${borderClass} font-semibold tabular-nums`}>
-                  <td className="py-3 px-4 sm:px-6">Total</td>
-                  <td className={`py-3 px-3 sm:px-4 text-right font-mono ${textMuted}`}>
-                    {formatINR(summary.plannedIncome)}
-                  </td>
-                  <td className="py-3 px-3 sm:px-4 text-right font-mono">
-                    {formatINR(summary.actualIncome)}
-                  </td>
-                  <td className={`py-3 px-4 sm:px-6 text-right font-mono ${textMuted}`}>
-                    {formatINR(summary.incomeDiff)}
-                  </td>
-                </tr>
-              </thead>
-              <tbody className={`divide-y ${borderClass} font-normal tabular-nums`}>
-                {summary.incomeCategoryTotals.map((item) => (
-                  <tr
-                    key={item.category}
-                    className={`${rowHover} transition-colors`}
-                  >
-                    <td className="py-2.5 px-4 sm:px-6 font-medium">
-                      {item.category}
-                    </td>
-                    <td className={`py-2.5 px-3 sm:px-4 text-right font-mono ${textMuted}`}>
-                      {formatINR(item.planned)}
-                    </td>
-                    <td className="py-2.5 px-3 sm:px-4 text-right font-mono font-medium">
-                      {formatINR(item.actual)}
-                    </td>
-                    <td className={`py-2.5 px-4 sm:px-6 text-right font-mono ${textMuted}`}>
-                      {formatINR(item.diff)}
-                    </td>
-                  </tr>
-                ))}
               </tbody>
             </table>
           </div>

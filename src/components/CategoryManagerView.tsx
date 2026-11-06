@@ -410,33 +410,6 @@ export const CategoryManagerView: React.FC<CategoryManagerViewProps> = ({
           </div>
         </div>
       </div>
-
-      {/* Starting Balance Input */}
-      <div className={`border rounded-lg p-6 ${surfaceClass}`}>
-        <label className={`block text-[11px] font-medium uppercase tracking-wider ${textSubtle} mb-1.5`}>
-          Starting Account Balance (₹)
-        </label>
-        <div className="flex items-center gap-3 max-w-sm">
-          <input
-            type="number"
-            value={startBalance}
-            onChange={(e) => {
-              const val = parseFloat(e.target.value) || 0;
-              setStartBalance(val);
-              onUpdateBudget({
-                ...budget,
-                startBalance: val,
-                expenseBudgets,
-                incomeBudgets,
-              });
-            }}
-            className={`w-full px-3 py-1.5 rounded-md text-xs font-mono border ${borderClass} ${subtleSurfaceClass} focus:outline-none focus:ring-1 focus:ring-amber-500`}
-          />
-          <span className={`text-xs font-mono tabular-nums whitespace-nowrap ${textMuted}`}>
-            {formatINR(startBalance)}
-          </span>
-        </div>
-      </div>
     </div>
   );
 };

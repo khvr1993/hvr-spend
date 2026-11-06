@@ -52,34 +52,6 @@ export const ExpensesByWeekView: React.FC<ExpensesByWeekViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* 6 Structural Weekly Summary Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-        {[
-          { label: 'Week 1 (1–7)', amount: summary.weeklyTotals.week1 },
-          { label: 'Week 2 (8–14)', amount: summary.weeklyTotals.week2 },
-          { label: 'Week 3 (15–21)', amount: summary.weeklyTotals.week3 },
-          { label: 'Week 4 (22–28)', amount: summary.weeklyTotals.week4 },
-          { label: 'Week 5 (29–31)', amount: summary.weeklyTotals.week5 },
-          { label: 'Total', amount: summary.weeklyTotals.total, isTotal: true },
-        ].map((w) => (
-          <div
-            key={w.label}
-            className={`border rounded-lg p-4 flex flex-col justify-between ${
-              w.isTotal
-                ? isDark ? 'bg-[#18181B] border-[#262626]' : 'bg-zinc-100 border-[#E5E5E5]'
-                : surfaceClass
-            }`}
-          >
-            <span className={`text-[10px] font-mono uppercase tracking-wider ${textSubtle}`}>
-              {w.label}
-            </span>
-            <p className={`text-base font-medium font-mono tabular-nums mt-1.5 ${w.isTotal ? 'text-amber-500' : 'text-inherit'}`}>
-              {formatINR(w.amount)}
-            </p>
-          </div>
-        ))}
-      </div>
-
       {/* Main Weekly Accounting Ledger Table */}
       <div className={`border rounded-lg overflow-hidden ${surfaceClass}`}>
         <div className={`px-6 py-4 border-b ${borderClass} flex flex-col sm:flex-row sm:items-center justify-between gap-3`}>

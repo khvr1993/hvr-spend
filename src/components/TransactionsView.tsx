@@ -247,10 +247,10 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
           <button
             onClick={handleDownloadCSV}
             title="Download transactions CSV for this month"
-            className={`px-3 py-1.5 border ${borderClass} ${subtleSurfaceClass} rounded-md text-xs font-medium hover:opacity-80 transition-opacity flex items-center gap-1.5 cursor-pointer`}
+            aria-label="Download transactions CSV for this month"
+            className={`px-2.5 py-1.5 border ${borderClass} ${subtleSurfaceClass} rounded-md text-xs font-medium hover:opacity-80 transition-opacity flex items-center cursor-pointer`}
           >
             <Download className="w-3.5 h-3.5 text-amber-500" />
-            Download CSV
           </button>
         </div>
       </div>
@@ -293,9 +293,9 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
               <thead>
                 <tr className={`border-b ${borderClass} ${subtleSurfaceClass} ${textMuted} font-medium tracking-wider uppercase text-[10px]`}>
                   <th className="py-2.5 px-6">Date</th>
+                  <th className="py-2.5 px-6 text-right">Amount</th>
                   <th className="py-2.5 px-4">Category</th>
                   <th className="py-2.5 px-6">Description</th>
-                  <th className="py-2.5 px-6 text-right">Amount</th>
                   <th className="py-2.5 px-6 text-right">Actions</th>
                 </tr>
               </thead>
@@ -304,6 +304,12 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
                   <tr key={t.id} className={`${rowHover} transition-colors group`}>
                     <td className={`py-3 px-6 font-mono ${textMuted} whitespace-nowrap`}>
                       {t.date}
+                    </td>
+                    <td className="py-3 px-6 text-right whitespace-nowrap font-mono font-medium">
+                      <span className={t.type === 'income' ? 'text-amber-500' : 'text-inherit'}>
+                        {t.type === 'expense' ? '-' : '+'}
+                        {formatINR(t.amount)}
+                      </span>
                     </td>
                     <td className="py-3 px-4 font-medium whitespace-nowrap">
                       {t.category}
@@ -317,12 +323,6 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
                           {t.notes}
                         </div>
                       )}
-                    </td>
-                    <td className="py-3 px-6 text-right whitespace-nowrap font-mono font-medium">
-                      <span className={t.type === 'income' ? 'text-amber-500' : 'text-inherit'}>
-                        {t.type === 'expense' ? '-' : '+'}
-                        {formatINR(t.amount)}
-                      </span>
                     </td>
                     <td className="py-3 px-6 text-right whitespace-nowrap">
                       <div className="flex items-center justify-end gap-1 opacity-70 group-hover:opacity-100 transition-opacity">
