@@ -50,3 +50,27 @@ test('P0-4: parseSheetRowsWithDiagnostics skips invalid dates instead of substit
   assert.equal(result.skippedInvalidDateCount, 2);
   assert.equal(result.skippedInvalidAmountCount, 1);
 });
+
+test('P0-4 regression: both 11/2/2026 (en_US) and 02/11/2026 (en_IN/GB) in a Nov-2026 sheet resolve to 2026-11-02', () => {
+  const usRows = [
+    ['Date', 'Type', 'Category', 'Description', 'Amount'],
+    ['11/2/2026', 'expense', 'Food', 'US formatted Nov 2', '320'],
+  ];
+  const inRows = [
+    ['Date', 'Type', 'Category', 'Description', 'Amount'],
+    ['02/11/2026', 'expense', 'Food', 'IN formatted Nov 2', '320'],
+  ];
+
+  const usTxs = parseSheetRowsToTransactions(usRows, '2026-11');
+  assert.equal(usTxs.length, 1);
+  assert.equal(usTxs[0].date, '2026-11-02');
+  assert.equal(usTxs[0].monthId, '2026-11');
+  assert.equal(usTxs[0].weekNumber, 1);
+
+  const inTxs = parseSheetRowsToTransactions(inRows, '2026-11');
+  assert.equal(inTxs.length, 1);
+  assert.equal(inTxs[0].date, '2026-11-02');
+  assert.equal(inTxs[0].monthId, '2026-11');
+  assert.equal(inTxs[0].weekNumber, 1);
+});
+

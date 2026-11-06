@@ -2,7 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAutoSyncController } from './autoSync';
 import { calculateSummary } from './expenseCalculations';
-import { syncToGoogleDrive } from '../services/googleDriveService';
+import { toExcelSerialDate } from './dateParsing';
+import {
+  syncToGoogleDrive,
+  importTransactionsFromGoogleSheet,
+  initAuth,
+  defaultTokenStore,
+} from '../services/googleDriveService';
 import { MonthlyBudget, Transaction } from '../types';
 
 const sampleBudget: MonthlyBudget = {
@@ -204,3 +210,95 @@ test('P0-6: syncToGoogleDrive writes values:batchUpdate BEFORE values:batchClear
 
   assert.deepEqual(failCalls, ['batchUpdate']);
 });
+
+test('P0-4 & P0-6: end-to-end write then import round-trip preserves 2026-11-02 via UNFORMATTED_VALUE + SERIAL_NUMBER', async () => {
+  let writtenTxRows: (string | number)[][] = [];
+  let requestedImportUrl = '';
+
+  const roundTripFetch: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes(':batchUpdate') && init?.body) {
+      const body = JSON.parse(String(init.body));
+      const txSheet = body.data.find((d: { range: string }) =>
+        d.range.startsWith('Transactions!')
+      );
+      // Simulate Google Sheets storing USER_ENTERED date strings as numeric serial numbers
+      writtenTxRows = (txSheet.values as (string | number)[][]).map((row, idx) => {
+        if (idx === 0) return row;
+        const serial = toExcelSerialDate(String(row[0]));
+        return [serial ?? row[0], ...row.slice(1)];
+      });
+      return new Response(JSON.stringify({}), { status: 200 });
+    }
+    if (url.includes('/values/Transactions')) {
+      requestedImportUrl = url;
+      return new Response(JSON.stringify({ values: writtenTxRows }), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+
+  await syncToGoogleDrive(
+    'valid-token',
+    sampleSummary,
+    sampleTransactions,
+    { ...sampleBudget, driveFileId: 'sheet-rt-1' },
+    'sheet-rt-1',
+    roundTripFetch
+  );
+
+  const imported = await importTransactionsFromGoogleSheet(
+    'valid-token',
+    'sheet-rt-1',
+    '2026-11',
+    roundTripFetch
+  );
+
+  assert.ok(requestedImportUrl.includes('valueRenderOption=UNFORMATTED_VALUE'));
+  assert.ok(requestedImportUrl.includes('dateTimeRenderOption=SERIAL_NUMBER'));
+  assert.equal(imported.length, 1);
+  assert.equal(imported[0].date, '2026-11-02');
+  assert.equal(imported[0].monthId, '2026-11');
+  assert.equal(imported[0].weekNumber, 1);
+  assert.equal(imported[0].amount, 500);
+});
+
+test('P0-2: 401/403 during mid-session Drive call invalidates token and triggers onAuthNeedsReconnect', async () => {
+  defaultTokenStore.saveToken('ya29.active-session-token', 3600);
+  defaultTokenStore.saveUserProfile({
+    uid: 'u-1',
+    displayName: 'Harsha',
+    email: 'khvr.1993@gmail.com',
+  });
+
+  let reconnectUserEmail: string | null = null;
+  initAuth(
+    () => {},
+    () => {},
+    (user) => {
+      reconnectUserEmail = user.email;
+    }
+  );
+
+  const expiredFetch: typeof fetch = async () => {
+    return new Response(
+      JSON.stringify({ error: { message: 'Request had invalid authentication credentials.' } }),
+      { status: 401, statusText: 'Unauthorized' }
+    );
+  };
+
+  await assert.rejects(
+    () =>
+      importTransactionsFromGoogleSheet(
+        'ya29.active-session-token',
+        'sheet-123',
+        '2026-11',
+        expiredFetch
+      ),
+    /401|authentication/i
+  );
+
+  assert.equal(defaultTokenStore.getValidToken(), null);
+  assert.equal(reconnectUserEmail, 'khvr.1993@gmail.com');
+  defaultTokenStore.clearAll();
+});
+

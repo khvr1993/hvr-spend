@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User } from 'firebase/auth';
 import {
   googleSignIn,
@@ -10,6 +10,7 @@ import {
   getEffectiveGoogleClientId,
   getCustomGoogleClientId,
   setCustomGoogleClientId,
+  revalidateSessionToken,
 } from '../services/googleDriveService';
 import { MonthlySummary, Transaction, MonthlyBudget } from '../types';
 import { formatDriveFileTitle, isDailySyncDue, formatLocalYYYYMMDD } from '../utils/expenseCalculations';
@@ -90,13 +91,20 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
   const [driveFiles, setDriveFiles] = useState<DriveFileInfo[]>([]);
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
 
+  // Revalidate stored token expiry whenever the modal opens
+  useEffect(() => {
+    if (isOpen && accessToken) {
+      revalidateSessionToken();
+    }
+  }, [isOpen, accessToken]);
+
   if (!isOpen) return null;
 
   const targetFileTitle = formatDriveFileTitle(summary.monthId);
   const todayStr = formatLocalYYYYMMDD();
   const syncedToday = !isDailySyncDue(budget.lastSyncedAt, todayStr);
   const currentHostname = typeof window !== 'undefined' ? window.location.hostname : '';
-  const hasActiveDriveSession = Boolean(currentUser && accessToken);
+  const hasActiveDriveSession = Boolean(currentUser && accessToken && !needsGoogleReconnect);
 
   // Surface classes
   const surfaceClass = isDark
@@ -164,13 +172,19 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
   };
 
   const handleInitiateSync = () => {
+    const valid = revalidateSessionToken();
+    if (!valid && !accessToken) {
+      setSyncError('Your Google session expired. Please click "Reconnect Google".');
+      return;
+    }
     setShowConfirmDialog(true);
   };
 
   const handleConfirmSync = async () => {
     setShowConfirmDialog(false);
-    if (!accessToken) {
-      setSyncError('Please authenticate with Google first.');
+    const activeToken = revalidateSessionToken() || accessToken;
+    if (!activeToken) {
+      setSyncError('Your Google session expired. Please click "Reconnect Google".');
       return;
     }
 
@@ -178,7 +192,7 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
     setSyncError(null);
     try {
       const result = await syncToGoogleDrive(
-        accessToken,
+        activeToken,
         summary,
         transactions,
         budget,
@@ -212,11 +226,15 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
   };
 
   const handleFetchDriveFiles = async () => {
-    if (!accessToken) return;
+    const activeToken = revalidateSessionToken() || accessToken;
+    if (!activeToken) {
+      setSyncError('Your Google session expired. Please click "Reconnect Google".');
+      return;
+    }
     setIsLoadingFiles(true);
     setSyncError(null);
     try {
-      const files = await listExpenseSheetsFromDrive(accessToken);
+      const files = await listExpenseSheetsFromDrive(activeToken);
       setDriveFiles(files);
     } catch (err: any) {
       setSyncError(err?.message || 'Could not scan Drive sheets');

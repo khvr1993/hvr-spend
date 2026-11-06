@@ -1,7 +1,7 @@
 import { Transaction, MonthlyBudget } from '../types';
-import { formatMonthIdToName } from '../utils/expenseCalculations';
+import { formatMonthIdToName, formatLocalYYYYMMDD } from '../utils/expenseCalculations';
 
-export const INITIAL_MONTH_ID = new Date().toISOString().slice(0, 7);
+export const INITIAL_MONTH_ID = formatLocalYYYYMMDD().slice(0, 7);
 export const INITIAL_MONTH_NAME = formatMonthIdToName(INITIAL_MONTH_ID);
 
 export const INITIAL_EXPENSE_BUDGETS_NOV: Record<string, number> = {

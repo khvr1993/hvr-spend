@@ -1,12 +1,6 @@
 import React, { useState } from 'react';
 import { MonthlySummary, Transaction } from '../types';
-import { formatINR } from '../utils/expenseCalculations';
-import {
-  Calendar,
-  Layers,
-  ArrowRight,
-  TrendingUp,
-} from 'lucide-react';
+import { formatINR, calculateBurnRateStats } from '../utils/expenseCalculations';
 
 interface GraphicalDashboardViewProps {
   summary: MonthlySummary;
@@ -31,7 +25,6 @@ const TONAL_GRAYS = [
 
 export const GraphicalDashboardView: React.FC<GraphicalDashboardViewProps> = ({
   summary,
-  transactions,
   allMonthsSummaries,
   onSelectMonth,
   onOpenAddModal,
@@ -81,13 +74,17 @@ export const GraphicalDashboardView: React.FC<GraphicalDashboardViewProps> = ({
     };
   });
 
-  // Burn rate stats
-  const now = new Date();
-  const currentDay = Math.min(30, Math.max(1, now.getDate()));
-  const daysInMonth = 30;
-  const daysRemaining = Math.max(1, daysInMonth - currentDay);
-  const avgDailySpend = summary.actualExpenses / currentDay;
-  const remainingBudgetPerDay = Math.max(0, summary.expenseDiff / daysRemaining);
+  // Month-aware burn rate stats (uses active month's real calendar days and past/current/future status)
+  const {
+    daysInMonth,
+    avgDailySpend,
+    remainingBudgetPerDay,
+    monthStatus,
+  } = calculateBurnRateStats(
+    summary.monthId,
+    summary.actualExpenses,
+    summary.expenseDiff
+  );
 
   return (
     <div className="space-y-8">
@@ -159,10 +156,19 @@ export const GraphicalDashboardView: React.FC<GraphicalDashboardViewProps> = ({
             </p>
           </div>
           <div className={`pt-3 border-t ${borderClass} flex items-center justify-between text-xs font-mono`}>
-            <span className={textSubtle}>Daily Allowance:</span>
-            <span className={textMuted}>
-              {formatINR(remainingBudgetPerDay, false)} / day
-            </span>
+            {monthStatus === 'past' ? (
+              <>
+                <span className={textSubtle}>Period:</span>
+                <span className={textMuted}>Completed ({daysInMonth}d)</span>
+              </>
+            ) : (
+              <>
+                <span className={textSubtle}>Daily Allowance:</span>
+                <span className={textMuted}>
+                  {formatINR(remainingBudgetPerDay, false)} / day
+                </span>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -187,8 +193,8 @@ export const GraphicalDashboardView: React.FC<GraphicalDashboardViewProps> = ({
                   <span className={`w-2.5 h-2.5 rounded-xs ${isDark ? 'bg-zinc-700' : 'bg-zinc-300'}`}></span>
                   Planned
                 </span>
-                <span className="flex items-center gap-1.5 text-zinc-100 dark:text-zinc-100">
-                  <span className="w-2.5 h-2.5 rounded-xs bg-zinc-200 dark:bg-zinc-100"></span>
+                <span className={`flex items-center gap-1.5 font-medium ${isDark ? 'text-zinc-100' : 'text-zinc-900'}`}>
+                  <span className={`w-2.5 h-2.5 rounded-xs ${isDark ? 'bg-zinc-100' : 'bg-zinc-900'}`}></span>
                   Actual
                 </span>
               </div>

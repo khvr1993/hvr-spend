@@ -13,6 +13,8 @@ import {
   generateSampleCSVContent,
   exportTransactionsToCSV,
   filterDuplicateTransactions,
+  calculateBurnRateStats,
+  parseMonthIdFromDriveTitle,
 } from './expenseCalculations';
 import { Transaction } from '../types';
 
@@ -367,6 +369,90 @@ test('P0-3: parseCSVTransactions preserves apostrophes, escaped double quotes, m
   assert.equal(items[4].description, "'single quoted text'");
   assert.equal(items[4].amount, 180);
 });
+
+test('filterDuplicateTransactions keeps same-day entries with different amounts or types and deduplicates exact matches', () => {
+  const existing: Transaction[] = [
+    {
+      id: 'tx-coffee-1',
+      monthId: '2026-11',
+      date: '2026-11-06',
+      type: 'expense',
+      category: 'Food',
+      description: 'Coffee',
+      amount: 150,
+      weekNumber: 1,
+      createdAt: 1,
+    },
+  ];
+
+  const incoming = [
+    // Exact duplicate (same date, type, category, description, amount) -> skipped
+    {
+      date: '2026-11-06',
+      type: 'expense',
+      category: 'Food',
+      description: 'Coffee',
+      amount: 150,
+    },
+    // Different-priced Coffee on the same day -> MUST be kept!
+    {
+      date: '2026-11-06',
+      type: 'expense',
+      category: 'Food',
+      description: 'Coffee',
+      amount: 220,
+    },
+    // Different type (income refund) with same amount -> MUST be kept!
+    {
+      date: '2026-11-06',
+      type: 'income',
+      category: 'Food',
+      description: 'Coffee',
+      amount: 150,
+    },
+  ];
+
+  const { unique, duplicateCount } = filterDuplicateTransactions(incoming, existing);
+  assert.equal(duplicateCount, 1);
+  assert.equal(unique.length, 2);
+  assert.equal(unique[0].amount, 220);
+  assert.equal(unique[1].type, 'income');
+});
+
+test('calculateBurnRateStats computes accurate daily spend for past, current, and future months', () => {
+  // Viewing Oct-2026 (31 days) while today is 2026-11-06
+  const pastStats = calculateBurnRateStats('2026-10', 31000, 9000, '2026-11-06');
+  assert.equal(pastStats.monthStatus, 'past');
+  assert.equal(pastStats.daysInMonth, 31);
+  assert.equal(pastStats.daysElapsed, 31);
+  assert.equal(pastStats.daysRemaining, 0);
+  assert.equal(pastStats.avgDailySpend, 1000);
+  assert.equal(pastStats.remainingBudgetPerDay, 0);
+
+  // Viewing Nov-2026 (30 days) on 2026-11-06 (6 days elapsed, 24 remaining)
+  const currentStats = calculateBurnRateStats('2026-11', 6000, 24000, '2026-11-06');
+  assert.equal(currentStats.monthStatus, 'current');
+  assert.equal(currentStats.daysInMonth, 30);
+  assert.equal(currentStats.daysElapsed, 6);
+  assert.equal(currentStats.daysRemaining, 24);
+  assert.equal(currentStats.avgDailySpend, 1000);
+  assert.equal(currentStats.remainingBudgetPerDay, 1000);
+
+  // Viewing Dec-2026 (31 days) while today is 2026-11-06
+  const futureStats = calculateBurnRateStats('2026-12', 0, 31000, '2026-11-06');
+  assert.equal(futureStats.monthStatus, 'future');
+  assert.equal(futureStats.daysInMonth, 31);
+  assert.equal(futureStats.daysElapsed, 0);
+  assert.equal(futureStats.daysRemaining, 31);
+  assert.equal(futureStats.avgDailySpend, 0);
+  assert.equal(futureStats.remainingBudgetPerDay, 1000);
+
+  // parseMonthIdFromDriveTitle
+  assert.equal(parseMonthIdFromDriveTitle('[HvrExpenseManager] Nov-26'), '2026-11');
+  assert.equal(parseMonthIdFromDriveTitle('Oct-26 Expenses'), '2026-10');
+  assert.equal(parseMonthIdFromDriveTitle('Expenses 2026-09'), '2026-09');
+});
+
 
 
 

@@ -4,6 +4,7 @@ import {
   formatINR,
   calculateWeekNumber,
   exportTransactionsToCSV,
+  formatLocalYYYYMMDD,
 } from '../utils/expenseCalculations';
 import {
   Search,
@@ -49,7 +50,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
 
   // Form states
   const [formType, setFormType] = useState<TransactionType>('expense');
-  const [formDate, setFormDate] = useState(new Date().toISOString().slice(0, 10));
+  const [formDate, setFormDate] = useState(() => formatLocalYYYYMMDD());
   const [formCategory, setFormCategory] = useState(categories[0] || 'Food');
   const [formDesc, setFormDesc] = useState('');
   const [formAmount, setFormAmount] = useState('');
@@ -109,7 +110,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
   const handleOpenAddModal = (type: TransactionType = 'expense', defaultCat?: string) => {
     setEditingTransaction(null);
     setFormType(type);
-    setFormDate(new Date().toISOString().slice(0, 10));
+    setFormDate(formatLocalYYYYMMDD());
     setFormCategory(defaultCat || (type === 'expense' ? categories[0] : incomeCategories[0]));
     setFormDesc('');
     setFormAmount('');

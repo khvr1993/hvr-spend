@@ -48,9 +48,14 @@ function formatComponents(year: number, month: number, day: number): string {
  *
  * Returns `null` if the input cannot be parsed as a valid date.
  */
+export interface ParseFlexibleDateOptions {
+  preferMonthFirst?: boolean;
+  targetMonth?: number;
+}
+
 export function parseFlexibleDate(
   raw: unknown,
-  options?: { preferMonthFirst?: boolean }
+  options?: ParseFlexibleDateOptions
 ): string | null {
   if (raw === null || raw === undefined) return null;
 
@@ -59,7 +64,7 @@ export function parseFlexibleDate(
     return formatLocalYYYYMMDD(raw);
   }
 
-  // Handle numeric Excel serial dates (typical range: 20000 to 80000, i.e., years 1954-2119)
+  // Handle numeric Excel serial dates (typical range: 10000 to 100000, i.e., years 1927-2173)
   if (typeof raw === 'number' && Number.isFinite(raw)) {
     return parseExcelSerialDate(raw);
   }
@@ -107,9 +112,31 @@ export function parseFlexibleDate(
       // Unambiguously MM/DD/YYYY
       month = first;
       day = second;
-    } else if (options?.preferMonthFirst) {
-      month = first;
-      day = second;
+    } else if (options?.preferMonthFirst !== undefined) {
+      if (options.preferMonthFirst) {
+        month = first;
+        day = second;
+      } else {
+        day = first;
+        month = second;
+      }
+    } else if (
+      options?.targetMonth !== undefined &&
+      options.targetMonth >= 1 &&
+      options.targetMonth <= 12 &&
+      first !== second
+    ) {
+      // If one component matches the expected target month (e.g., 11 for Nov), disambiguate
+      if (first === options.targetMonth) {
+        month = first;
+        day = second;
+      } else if (second === options.targetMonth) {
+        day = first;
+        month = second;
+      } else {
+        day = first;
+        month = second;
+      }
     } else {
       // Default to DD/MM/YYYY (Indian/UK locale standard)
       day = first;
@@ -155,4 +182,19 @@ export function parseExcelSerialDate(serial: number): string | null {
   const day = d.getUTCDate();
   if (!isValidCalendarDate(year, month, day)) return null;
   return formatComponents(year, month, day);
+}
+
+/**
+ * Converts a YYYY-MM-DD date string into an Excel/Google Sheets 1900-epoch serial number.
+ */
+export function toExcelSerialDate(dateStr: string): number | null {
+  const match = dateStr.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = parseInt(match[1], 10);
+  const month = parseInt(match[2], 10);
+  const day = parseInt(match[3], 10);
+  if (!isValidCalendarDate(year, month, day)) return null;
+  const excelEpochUtc = Date.UTC(1899, 11, 30);
+  const targetUtc = Date.UTC(year, month - 1, day);
+  return Math.round((targetUtc - excelEpochUtc) / (86400 * 1000));
 }

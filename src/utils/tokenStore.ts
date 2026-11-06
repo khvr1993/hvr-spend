@@ -31,11 +31,16 @@ export function createTokenStore(
 ) {
   let memoryToken: string | null = null;
   let memoryExpiresAt: number = 0;
+  let memoryUserProfile: StoredUserProfile | null = null;
 
   function readRecord(): StoredTokenRecord | null {
     const now = nowFn();
     if (memoryToken && memoryExpiresAt > now) {
       return { token: memoryToken, expiresAt: memoryExpiresAt };
+    }
+    if (memoryToken && memoryExpiresAt <= now) {
+      memoryToken = null;
+      memoryExpiresAt = 0;
     }
 
     const storage = getStorage();
@@ -103,41 +108,49 @@ export function createTokenStore(
     return rec ? rec.token : null;
   }
 
+  function getExpiresAt(): number | null {
+    const rec = readRecord();
+    return rec ? rec.expiresAt : null;
+  }
+
   function isTokenExpired(): boolean {
     return getValidToken() === null;
   }
 
   function saveUserProfile(user: Partial<StoredUserProfile>): void {
+    const normalized: StoredUserProfile = {
+      uid: user.uid || 'google-user',
+      displayName: user.displayName || 'Google User',
+      email: user.email || null,
+      photoURL: user.photoURL || null,
+    };
+    memoryUserProfile = normalized;
     const storage = getStorage();
     if (!storage) return;
     try {
-      storage.setItem(
-        USER_STORAGE_KEY,
-        JSON.stringify({
-          uid: user.uid || 'google-user',
-          displayName: user.displayName || 'Google User',
-          email: user.email || null,
-          photoURL: user.photoURL || null,
-        })
-      );
+      storage.setItem(USER_STORAGE_KEY, JSON.stringify(normalized));
     } catch {}
   }
 
   function getUserProfile(): StoredUserProfile | null {
     const storage = getStorage();
-    if (!storage) return null;
-    try {
-      const raw = storage.getItem(USER_STORAGE_KEY);
-      if (!raw) return null;
-      return JSON.parse(raw) as StoredUserProfile;
-    } catch {
-      return null;
+    if (storage) {
+      try {
+        const raw = storage.getItem(USER_STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw) as StoredUserProfile;
+          memoryUserProfile = parsed;
+          return parsed;
+        }
+      } catch {}
     }
+    return memoryUserProfile;
   }
 
   function clearAll(): void {
     memoryToken = null;
     memoryExpiresAt = 0;
+    memoryUserProfile = null;
     const storage = getStorage();
     if (!storage) return;
     try {
@@ -149,6 +162,7 @@ export function createTokenStore(
   return {
     saveToken,
     getValidToken,
+    getExpiresAt,
     isTokenExpired,
     saveUserProfile,
     getUserProfile,

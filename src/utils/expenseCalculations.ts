@@ -98,6 +98,94 @@ export function formatDriveFileTitle(monthId: string): string {
 }
 
 /**
+ * Parses a YYYY-MM monthId from a Google Drive file title such as
+ * "[HvrExpenseManager] Nov-26", "Nov-26 Expenses", or "2026-11".
+ */
+export function parseMonthIdFromDriveTitle(title: string): string | null {
+  if (!title) return null;
+  const isoMatch = title.match(/\b(20\d{2})-(0[1-9]|1[0-2])\b/);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2]}`;
+  }
+  const monMatch = title.match(
+    /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[-_\s](\d{2}|\d{4})\b/i
+  );
+  if (monMatch) {
+    const monStr = monMatch[1].slice(0, 3).toLowerCase();
+    const monthIdx = MONTH_SHORT_NAMES.findIndex((m) => m.toLowerCase() === monStr);
+    if (monthIdx >= 0) {
+      let yr = parseInt(monMatch[2], 10);
+      if (monMatch[2].length === 2) {
+        yr += 2000;
+      }
+      return `${yr}-${String(monthIdx + 1).padStart(2, '0')}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Computes accurate daily burn-rate and allowance metrics for any month board
+ * (past, current, or future) using the month's real calendar day count.
+ */
+export interface BurnRateStats {
+  daysInMonth: number;
+  daysElapsed: number;
+  daysRemaining: number;
+  avgDailySpend: number;
+  remainingBudgetPerDay: number;
+  monthStatus: 'past' | 'current' | 'future';
+}
+
+export function calculateBurnRateStats(
+  monthId: string,
+  actualExpenses: number,
+  expenseDiff: number,
+  todayDateStr: string = formatLocalYYYYMMDD()
+): BurnRateStats {
+  const [yrStr, moStr] = (monthId || '').split('-');
+  const year = parseInt(yrStr, 10) || 2026;
+  const month = parseInt(moStr, 10) || 11;
+  const daysInMonth = new Date(year, month, 0).getDate();
+
+  const currentMonthId = todayDateStr.slice(0, 7);
+  const currentDayOfMonth = parseInt(todayDateStr.slice(8, 10), 10) || 1;
+
+  if (monthId < currentMonthId) {
+    return {
+      daysInMonth,
+      daysElapsed: daysInMonth,
+      daysRemaining: 0,
+      avgDailySpend: actualExpenses / daysInMonth,
+      remainingBudgetPerDay: 0,
+      monthStatus: 'past',
+    };
+  }
+
+  if (monthId > currentMonthId) {
+    return {
+      daysInMonth,
+      daysElapsed: 0,
+      daysRemaining: daysInMonth,
+      avgDailySpend: 0,
+      remainingBudgetPerDay: Math.max(0, expenseDiff / daysInMonth),
+      monthStatus: 'future',
+    };
+  }
+
+  const daysElapsed = Math.min(daysInMonth, Math.max(1, currentDayOfMonth));
+  const daysRemaining = Math.max(1, daysInMonth - daysElapsed);
+  return {
+    daysInMonth,
+    daysElapsed,
+    daysRemaining,
+    avgDailySpend: actualExpenses / daysElapsed,
+    remainingBudgetPerDay: Math.max(0, expenseDiff / daysRemaining),
+    monthStatus: 'current',
+  };
+}
+
+/**
  * Determines whether the daily automatic Drive sync is due for a monthly board
  */
 export function isDailySyncDue(lastSyncedAt: number | undefined, todayDateStr: string): boolean {
@@ -459,28 +547,37 @@ export function parseCSVTransactions(csvText: string, defaultMonthId: string): P
 }
 
 /**
- * Generates a unique normalized signature for duplicate detection based on Date, Category, and Description
+ * Generates a unique normalized signature for duplicate detection based on
+ * Date, Type, Category, Description, and Amount.
  */
-export function getTransactionSignature(item: {
+export interface SignatureCandidate {
   date?: string;
+  type?: string;
   category?: string;
   description?: string;
-}): string {
+  amount?: number | string;
+}
+
+export function getTransactionSignature(item: SignatureCandidate): string {
   const datePart = (item.date || '').trim();
+  const typePart = (item.type || 'expense').trim().toLowerCase();
   const categoryPart = (item.category || '').trim().toLowerCase();
   const descPart = (item.description || '').trim().toLowerCase();
-  return `${datePart}|${categoryPart}|${descPart}`;
+  const numericAmount =
+    typeof item.amount === 'number'
+      ? item.amount
+      : parseFloat(String(item.amount ?? '0')) || 0;
+  const amountPart = Math.abs(numericAmount).toFixed(2);
+  return `${datePart}|${typePart}|${categoryPart}|${descPart}|${amountPart}`;
 }
 
 /**
- * Filters out duplicate transactions that match the same (Date, Category, Description)
+ * Filters out duplicate transactions that match the same (Date, Type, Category, Description, Amount)
  * either against existing transactions in the target month or within the incoming list itself.
  */
-export function filterDuplicateTransactions<
-  T extends { date?: string; category?: string; description?: string }
->(
+export function filterDuplicateTransactions<T extends SignatureCandidate>(
   incoming: T[],
-  existingMonthTransactions: { date?: string; category?: string; description?: string }[] = []
+  existingMonthTransactions: SignatureCandidate[] = []
 ): { unique: T[]; duplicateCount: number } {
   const seenSignatures = new Set<string>(
     existingMonthTransactions.map((t) => getTransactionSignature(t))

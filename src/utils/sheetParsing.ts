@@ -15,9 +15,32 @@ export interface SheetParseResult {
  * - Derives `monthId` directly from `dateStr.slice(0, 7)` so `monthId` and `date` never disagree.
  * - Computes `weekNumber` (1..5) via `calculateWeekNumber(dateStr)`.
  */
+function detectSheetPreferMonthFirst(
+  rows: unknown[][],
+  dateIdx: number
+): boolean | undefined {
+  if (dateIdx < 0) return undefined;
+  let dmyCount = 0;
+  let mdyCount = 0;
+  for (let i = 1; i < rows.length; i++) {
+    const raw = rows[i]?.[dateIdx];
+    if (typeof raw !== 'string') continue;
+    const m = raw.trim().match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})(?:\s.*)?$/);
+    if (!m) continue;
+    const first = parseInt(m[1], 10);
+    const second = parseInt(m[2], 10);
+    if (first > 12 && second <= 12) dmyCount++;
+    else if (second > 12 && first <= 12) mdyCount++;
+  }
+  if (mdyCount > 0 && dmyCount === 0) return true;
+  if (dmyCount > 0 && mdyCount === 0) return false;
+  return undefined;
+}
+
 export function parseSheetRowsWithDiagnostics(
   rows: unknown[][],
-  defaultMonthId: string
+  defaultMonthId: string,
+  options?: { preferMonthFirst?: boolean }
 ): SheetParseResult {
   if (!rows || rows.length <= 1) {
     return { transactions: [], skippedInvalidDateCount: 0, skippedInvalidAmountCount: 0 };
@@ -50,6 +73,14 @@ export function parseSheetRowsWithDiagnostics(
   let skippedInvalidAmountCount = 0;
 
   const fallbackMonth = /^\d{4}-\d{2}$/.test(defaultMonthId) ? defaultMonthId : '2026-11';
+  const parsedTargetMonth = parseInt(fallbackMonth.split('-')[1], 10);
+  const targetMonth =
+    Number.isInteger(parsedTargetMonth) && parsedTargetMonth >= 1 && parsedTargetMonth <= 12
+      ? parsedTargetMonth
+      : undefined;
+
+  const preferMonthFirst =
+    options?.preferMonthFirst ?? detectSheetPreferMonthFirst(rows, dateIdx);
 
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
@@ -65,7 +96,10 @@ export function parseSheetRowsWithDiagnostics(
     }
 
     const rawDate = dateIdx >= 0 ? row[dateIdx] : undefined;
-    const parsedDate = parseFlexibleDate(rawDate);
+    const parsedDate = parseFlexibleDate(rawDate, {
+      preferMonthFirst,
+      targetMonth,
+    });
     if (!parsedDate) {
       skippedInvalidDateCount += 1;
       continue;
@@ -110,7 +144,8 @@ export function parseSheetRowsWithDiagnostics(
 
 export function parseSheetRowsToTransactions(
   rows: unknown[][],
-  defaultMonthId: string
+  defaultMonthId: string,
+  options?: { preferMonthFirst?: boolean }
 ): Transaction[] {
-  return parseSheetRowsWithDiagnostics(rows, defaultMonthId).transactions;
+  return parseSheetRowsWithDiagnostics(rows, defaultMonthId, options).transactions;
 }

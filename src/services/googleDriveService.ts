@@ -132,6 +132,10 @@ export const defaultTokenStore = createTokenStore();
 let isSigningIn = false;
 let isHandlingRedirect = false;
 
+let registeredOnAuthSuccess: ((user: User, token: string) => void) | undefined;
+let registeredOnAuthFailure: (() => void) | undefined;
+let registeredOnAuthNeedsReconnect: ((user: User) => void) | undefined;
+
 function saveSessionAuth(token: string, user: Partial<User>, expiresInSeconds = 3600) {
   defaultTokenStore.saveToken(token, expiresInSeconds);
   defaultTokenStore.saveUserProfile({
@@ -146,6 +150,36 @@ function getCachedSessionUser(): User | null {
   const profile = defaultTokenStore.getUserProfile();
   if (!profile) return null;
   return profile as unknown as User;
+}
+
+/**
+ * Marks the current OAuth access token as expired/invalidated mid-session,
+ * preserving the user profile and notifying the UI to show "Reconnect Google".
+ */
+export function markTokenExpired(): void {
+  defaultTokenStore.saveToken(null);
+  const existingUser = getCachedSessionUser() || auth?.currentUser || null;
+  if (existingUser) {
+    registeredOnAuthNeedsReconnect?.(existingUser);
+  }
+}
+
+/**
+ * Revalidates the stored access token against its expiry timestamp.
+ * If expired while a user session exists, triggers `onAuthNeedsReconnect` and returns null.
+ */
+export function revalidateSessionToken(): string | null {
+  const validToken = defaultTokenStore.getValidToken();
+  if (validToken) return validToken;
+  const existingUser = getCachedSessionUser() || auth?.currentUser || null;
+  if (existingUser) {
+    registeredOnAuthNeedsReconnect?.(existingUser);
+  }
+  return null;
+}
+
+export function getTokenExpiresAt(): number | null {
+  return defaultTokenStore.getExpiresAt();
 }
 
 async function resolveUserFromAccessToken(accessToken: string): Promise<User> {
@@ -189,6 +223,10 @@ export const initAuth = (
   onAuthFailure?: () => void,
   onAuthNeedsReconnect?: (user: User) => void
 ) => {
+  registeredOnAuthSuccess = onAuthSuccess;
+  registeredOnAuthFailure = onAuthFailure;
+  registeredOnAuthNeedsReconnect = onAuthNeedsReconnect;
+
   // Restore active session immediately if present
   const validToken = defaultTokenStore.getValidToken();
   const existingUser = getCachedSessionUser();
@@ -199,7 +237,7 @@ export const initAuth = (
     onAuthNeedsReconnect?.(existingUser);
   }
 
-  if (!auth) {
+  if (!auth || typeof window === 'undefined') {
     if (!existingUser && !validToken) {
       onAuthFailure?.();
     }
@@ -364,19 +402,30 @@ export interface DriveFileInfo {
 /**
  * Lists Google Sheets in the user's Google Drive matching expense spreadsheets
  */
-export async function listExpenseSheetsFromDrive(accessToken: string): Promise<DriveFileInfo[]> {
+export async function listExpenseSheetsFromDrive(
+  accessToken: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<DriveFileInfo[]> {
   const query = "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false";
   const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
     query
   )}&fields=files(id,name,mimeType,modifiedTime,webViewLink)&orderBy=modifiedTime desc&pageSize=20`;
 
-  const response = await fetch(url, {
+  const response = await fetchImpl(url, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },
   });
 
   if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      markTokenExpired();
+      const err = await response.json().catch(() => ({}));
+      throw new Error(
+        err.error?.message ||
+          `Google Drive session expired (${response.status}). Please click "Reconnect Google".`
+      );
+    }
     const err = await response.json().catch(() => ({}));
     throw new Error(err.error?.message || `Failed to fetch sheets from Drive: ${response.statusText}`);
   }
@@ -609,6 +658,7 @@ export async function syncToGoogleDrive(
     });
 
     if (searchRes.status === 401 || searchRes.status === 403) {
+      markTokenExpired();
       const err = await searchRes.json().catch(() => ({}));
       throw new Error(
         err.error?.message || `Google Drive authorization failed (${searchRes.status}). Please reconnect Google.`
@@ -671,6 +721,9 @@ export async function syncToGoogleDrive(
       webViewLink = '';
       isUpdated = false;
     } else if (!updateRes.ok) {
+      if (updateRes.status === 401 || updateRes.status === 403) {
+        markTokenExpired();
+      }
       const err = await updateRes.json().catch(() => ({}));
       throw new Error(
         err.error?.message || `Failed to update spreadsheet data (${updateRes.status}): ${updateRes.statusText}`
@@ -702,6 +755,9 @@ export async function syncToGoogleDrive(
     });
 
     if (!createRes.ok) {
+      if (createRes.status === 401 || createRes.status === 403) {
+        markTokenExpired();
+      }
       const err = await createRes.json().catch(() => ({}));
       throw new Error(
         err.error?.message || `Failed to create Google Sheet (${createRes.status}): ${createRes.statusText}`
@@ -719,6 +775,9 @@ export async function syncToGoogleDrive(
 
     const initialWriteRes = await writeValuesToSpreadsheet(spreadsheetId);
     if (!initialWriteRes.ok) {
+      if (initialWriteRes.status === 401 || initialWriteRes.status === 403) {
+        markTokenExpired();
+      }
       const err = await initialWriteRes.json().catch(() => ({}));
       throw new Error(
         err.error?.message ||
@@ -794,9 +853,13 @@ export async function importTransactionsFromGoogleSheet(
   targetMonthId: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<Transaction[]> {
-  // Try fetching Transactions tab first, fallback to first sheet
+  // Use UNFORMATTED_VALUE + SERIAL_NUMBER so date cells arrive as locale-independent Excel serials
+  // instead of locale-dependent strings like "11/2/2026".
+  const queryParams = 'valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER';
   const range = 'Transactions!A1:Z500';
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+    range
+  )}?${queryParams}`;
 
   const res = await fetchImpl(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -804,21 +867,36 @@ export async function importTransactionsFromGoogleSheet(
 
   if (!res.ok) {
     if (res.status === 401 || res.status === 403) {
+      markTokenExpired();
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `Google Sheets authorization failed (${res.status}).`);
+      throw new Error(
+        err.error?.message || `Google Sheets authorization failed (${res.status}). Please reconnect Google.`
+      );
     }
     // If Transactions tab doesn't exist, read metadata to find available sheets
     const metaRes = await fetchImpl(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
-    if (!metaRes.ok) throw new Error('Unable to access spreadsheet');
+    if (!metaRes.ok) {
+      if (metaRes.status === 401 || metaRes.status === 403) {
+        markTokenExpired();
+      }
+      throw new Error('Unable to access spreadsheet');
+    }
     const meta = await metaRes.json();
     const firstSheet = meta.sheets?.[0]?.properties?.title || 'Sheet1';
     const fallbackRes = await fetchImpl(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(firstSheet)}!A1:Z500`,
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+        firstSheet
+      )}!A1:Z500?${queryParams}`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
     );
-    if (!fallbackRes.ok) throw new Error('Unable to read spreadsheet rows');
+    if (!fallbackRes.ok) {
+      if (fallbackRes.status === 401 || fallbackRes.status === 403) {
+        markTokenExpired();
+      }
+      throw new Error('Unable to read spreadsheet rows');
+    }
     const fallbackData = await fallbackRes.json();
     return parseSheetRowsToTransactions(fallbackData.values || [], targetMonthId);
   }

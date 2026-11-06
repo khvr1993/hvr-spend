@@ -5,6 +5,7 @@ import {
   calculateWeekNumber,
   getMonthIdFromDate,
   formatMonthIdToName,
+  formatLocalYYYYMMDD,
 } from '../utils/expenseCalculations';
 import {
   Plus,
@@ -74,7 +75,7 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
   onNavigateToTab,
   isDark = false,
 }) => {
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = formatLocalYYYYMMDD();
 
   const [type, setType] = useState<TransactionType>('expense');
   const [amount, setAmount] = useState('');
@@ -151,7 +152,7 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
   const setYesterday = () => {
     const d = new Date();
     d.setDate(d.getDate() - 1);
-    setDate(d.toISOString().slice(0, 10));
+    setDate(formatLocalYYYYMMDD(d));
     setIsCalendarOpen(false);
   };
 

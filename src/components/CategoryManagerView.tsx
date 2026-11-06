@@ -1,20 +1,29 @@
 import React, { useState, useEffect } from 'react';
-import { MonthlyBudget } from '../types';
+import { MonthlyBudget, Transaction } from '../types';
+import { INITIAL_MONTH_NAME } from '../data/initialData';
 import { formatINR } from '../utils/expenseCalculations';
 import { Plus, Check, RotateCcw, Edit2, Trash2, X, AlertTriangle } from 'lucide-react';
 
 interface CategoryManagerViewProps {
   budget: MonthlyBudget;
+  transactions?: Transaction[];
+  resetTargetMonthName?: string;
   onUpdateBudget: (updated: MonthlyBudget) => void;
   onRenameCategory: (oldName: string, newName: string, type: 'expense' | 'income') => void;
-  onDeleteCategory: (catName: string, type: 'expense' | 'income') => void;
-  onResetToDefaults: () => void;
+  onDeleteCategory: (
+    catName: string,
+    type: 'expense' | 'income',
+    reassignToCategory?: string
+  ) => void;
+  onResetToDefaults: (forceWithoutBackup?: boolean) => { ok: boolean; error?: string } | void;
   onResetCurrentMonthCategories?: () => void;
   isDark?: boolean;
 }
 
 export const CategoryManagerView: React.FC<CategoryManagerViewProps> = ({
   budget,
+  transactions = [],
+  resetTargetMonthName = INITIAL_MONTH_NAME,
   onUpdateBudget,
   onRenameCategory,
   onDeleteCategory,
@@ -46,6 +55,13 @@ export const CategoryManagerView: React.FC<CategoryManagerViewProps> = ({
 
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [showResetConfirmModal, setShowResetConfirmModal] = useState(false);
+  const [resetBackupError, setResetBackupError] = useState<string | null>(null);
+  const [pendingDeleteCat, setPendingDeleteCat] = useState<{
+    catName: string;
+    type: 'expense' | 'income';
+    txCount: number;
+    reassignTo: string;
+  } | null>(null);
 
   // Surface classes (60-30-10 rule)
   const surfaceClass = isDark
@@ -135,6 +151,29 @@ export const CategoryManagerView: React.FC<CategoryManagerViewProps> = ({
     setTimeout(() => setSavedSuccess(false), 2000);
   };
 
+  const handleRequestDeleteCategory = (catName: string, type: 'expense' | 'income') => {
+    const affectedTxs = transactions.filter((t) => t.type === type && t.category === catName);
+    if (affectedTxs.length === 0) {
+      onDeleteCategory(catName, type);
+      return;
+    }
+    const defaultFallback = type === 'expense' ? 'Unplanned' : 'Other';
+    const availableCats = Object.keys(type === 'expense' ? expenseBudgets : incomeBudgets).filter(
+      (c) => c !== catName
+    );
+    const reassignTo =
+      catName !== defaultFallback
+        ? defaultFallback
+        : availableCats[0] || (type === 'expense' ? 'Other Expense' : 'Misc Income');
+
+    setPendingDeleteCat({
+      catName,
+      type,
+      txCount: affectedTxs.length,
+      reassignTo,
+    });
+  };
+
   const totalExpenseBudget = Object.values(expenseBudgets).reduce((a, b) => a + b, 0);
   const totalIncomeBudget = Object.values(incomeBudgets).reduce((a, b) => a + b, 0);
 
@@ -154,7 +193,10 @@ export const CategoryManagerView: React.FC<CategoryManagerViewProps> = ({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setShowResetConfirmModal(true)}
+            onClick={() => {
+              setResetBackupError(null);
+              setShowResetConfirmModal(true);
+            }}
             className={`px-3 py-1.5 rounded-md text-xs font-medium border ${borderClass} ${subtleSurfaceClass} ${textMuted} hover:text-inherit flex items-center gap-1.5 cursor-pointer`}
           >
             <RotateCcw className="w-3.5 h-3.5" />
@@ -302,7 +344,7 @@ export const CategoryManagerView: React.FC<CategoryManagerViewProps> = ({
                     />
                     <button
                       type="button"
-                      onClick={() => onDeleteCategory(cat, 'expense')}
+                      onClick={() => handleRequestDeleteCategory(cat, 'expense')}
                       aria-label={`Delete category ${cat}`}
                       title="Delete category"
                       className={`p-1 rounded ${textSubtle} hover:text-amber-500 opacity-70 group-hover:opacity-100 transition-opacity cursor-pointer`}
@@ -401,7 +443,7 @@ export const CategoryManagerView: React.FC<CategoryManagerViewProps> = ({
                     />
                     <button
                       type="button"
-                      onClick={() => onDeleteCategory(cat, 'income')}
+                      onClick={() => handleRequestDeleteCategory(cat, 'income')}
                       aria-label={`Delete category ${cat}`}
                       title="Delete category"
                       className={`p-1 rounded ${textSubtle} hover:text-amber-500 opacity-70 group-hover:opacity-100 transition-opacity cursor-pointer`}
@@ -415,6 +457,76 @@ export const CategoryManagerView: React.FC<CategoryManagerViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Category Deletion Reassignment Modal (Prevents Orphaned Transactions) */}
+      {pendingDeleteCat && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-cat-confirm-title"
+        >
+          <div className={`border rounded-lg shadow-2xl max-w-md w-full p-6 space-y-4 ${surfaceClass}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-md bg-amber-500/15 text-amber-500 shrink-0">
+                  <AlertTriangle className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 id="delete-cat-confirm-title" className="text-sm font-medium tracking-tight">
+                    Reassign Transactions Before Deleting
+                  </h4>
+                  <p className={`text-[11px] font-mono ${textMuted}`}>
+                    Category in use ({pendingDeleteCat.txCount} transaction{pendingDeleteCat.txCount === 1 ? '' : 's'})
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingDeleteCat(null)}
+                aria-label="Close category delete dialog"
+                className={`${textSubtle} hover:text-inherit p-1 cursor-pointer`}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className={`text-xs ${textMuted} space-y-2 leading-relaxed`}>
+              <p>
+                Category <strong className="text-inherit">{pendingDeleteCat.catName}</strong> has{' '}
+                <strong className="text-inherit">{pendingDeleteCat.txCount}</strong> recorded transaction
+                {pendingDeleteCat.txCount === 1 ? '' : 's'}. Deleting it will reassign those transactions to{' '}
+                <strong className="text-inherit">{pendingDeleteCat.reassignTo}</strong> so your ledger totals stay accurate.
+              </p>
+            </div>
+
+            <div className={`pt-3 border-t ${borderClass} flex items-center justify-end gap-2`}>
+              <button
+                type="button"
+                autoFocus
+                onClick={() => setPendingDeleteCat(null)}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium border ${borderClass} ${subtleSurfaceClass} cursor-pointer`}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onDeleteCategory(
+                    pendingDeleteCat.catName,
+                    pendingDeleteCat.type,
+                    pendingDeleteCat.reassignTo
+                  );
+                  setPendingDeleteCat(null);
+                }}
+                className="px-3.5 py-1.5 rounded-md text-xs font-medium bg-amber-500 hover:bg-amber-400 text-zinc-950 cursor-pointer"
+              >
+                Reassign to {pendingDeleteCat.reassignTo} &amp; Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Mandatory Destructive Reset Confirmation Modal (P0-5) */}
       {showResetConfirmModal && (
@@ -441,7 +553,10 @@ export const CategoryManagerView: React.FC<CategoryManagerViewProps> = ({
               </div>
               <button
                 type="button"
-                onClick={() => setShowResetConfirmModal(false)}
+                onClick={() => {
+                  setResetBackupError(null);
+                  setShowResetConfirmModal(false);
+                }}
                 aria-label="Close confirmation dialog"
                 className={`${textSubtle} hover:text-inherit p-1 cursor-pointer`}
               >
@@ -452,18 +567,38 @@ export const CategoryManagerView: React.FC<CategoryManagerViewProps> = ({
             <div className={`text-xs ${textMuted} space-y-2 leading-relaxed`}>
               <p>
                 This will permanently delete all transactions and reset every month board except{' '}
-                <strong className="text-inherit">Nov-26 Expenses</strong>. Custom categories and budgets will be lost. This cannot be undone.
+                <strong className="text-inherit">{resetTargetMonthName}</strong>. Custom categories and budgets will be lost. This cannot be undone.
               </p>
               <p className="text-[11px] font-mono">
-                A timestamped recovery snapshot will be saved automatically in browser storage before resetting.
+                A timestamped recovery snapshot is saved to browser storage before resetting. If backup creation fails, the reset is blocked unless you explicitly proceed without a backup.
               </p>
             </div>
+
+            {resetBackupError && (
+              <div className="p-3 rounded-md border border-red-500/40 bg-red-500/10 text-xs text-red-400 space-y-2">
+                <p className="font-medium">Backup could not be saved: {resetBackupError}</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onResetToDefaults(true);
+                    setResetBackupError(null);
+                    setShowResetConfirmModal(false);
+                  }}
+                  className="px-3 py-1 rounded text-xs font-medium bg-red-600 hover:bg-red-500 text-white cursor-pointer"
+                >
+                  Proceed Without Backup
+                </button>
+              </div>
+            )}
 
             <div className={`pt-3 border-t ${borderClass} flex flex-wrap items-center justify-end gap-2`}>
               <button
                 type="button"
                 autoFocus
-                onClick={() => setShowResetConfirmModal(false)}
+                onClick={() => {
+                  setResetBackupError(null);
+                  setShowResetConfirmModal(false);
+                }}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium border ${borderClass} ${subtleSurfaceClass} cursor-pointer`}
               >
                 Cancel
@@ -473,6 +608,7 @@ export const CategoryManagerView: React.FC<CategoryManagerViewProps> = ({
                   type="button"
                   onClick={() => {
                     onResetCurrentMonthCategories();
+                    setResetBackupError(null);
                     setShowResetConfirmModal(false);
                   }}
                   className={`px-3 py-1.5 rounded-md text-xs font-medium border border-amber-500/40 text-amber-500 hover:bg-amber-500/10 cursor-pointer`}
@@ -483,7 +619,12 @@ export const CategoryManagerView: React.FC<CategoryManagerViewProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  onResetToDefaults();
+                  const res = onResetToDefaults(false);
+                  if (res && res.ok === false) {
+                    setResetBackupError(res.error || 'Browser storage quota exceeded.');
+                    return;
+                  }
+                  setResetBackupError(null);
                   setShowResetConfirmModal(false);
                 }}
                 className="px-3.5 py-1.5 rounded-md text-xs font-medium bg-red-600 hover:bg-red-500 text-white cursor-pointer"

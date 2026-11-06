@@ -24,7 +24,8 @@ interface ImportTransactionsModalProps {
   onImportTransactions: (
     transactions: Transaction[],
     targetMonthId: string,
-    targetMonthName: string
+    targetMonthName: string,
+    includeDuplicates?: boolean
   ) => void;
   isDark?: boolean;
 }
@@ -40,8 +41,10 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [targetMonth, setTargetMonth] = useState(currentMonthId || '2026-11');
   const [rawCsvCache, setRawCsvCache] = useState<string>('');
+  const [allParsedItems, setAllParsedItems] = useState<Partial<Transaction>[]>([]);
   const [parsedPreview, setParsedPreview] = useState<Partial<Transaction>[]>([]);
   const [skippedDuplicatesCount, setSkippedDuplicatesCount] = useState<number>(0);
+  const [includeDuplicates, setIncludeDuplicates] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -62,21 +65,22 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
   useEffect(() => {
     if (rawCsvCache && /^\d{4}-\d{2}$/.test(targetMonth)) {
       const items = parseCSVTransactions(rawCsvCache, targetMonth);
+      setAllParsedItems(items);
       const { unique, duplicateCount } = filterDuplicateTransactions(
         items,
         existingForTargetMonth
       );
-      setParsedPreview(unique);
+      setParsedPreview(includeDuplicates ? items : unique);
       setSkippedDuplicatesCount(duplicateCount);
-      if (unique.length === 0 && duplicateCount > 0) {
+      if (!includeDuplicates && unique.length === 0 && duplicateCount > 0) {
         setErrorMsg(
-          `All ${duplicateCount} transaction(s) in this file already exist in ${targetMonth} (same Date, Category & Description). Duplicates were skipped.`
+          `All ${duplicateCount} transaction(s) in this file match existing entries in ${targetMonth} (same Date, Type, Category, Description & Amount).`
         );
       } else {
         setErrorMsg(null);
       }
     }
-  }, [targetMonth, rawCsvCache, existingForTargetMonth]);
+  }, [targetMonth, rawCsvCache, existingForTargetMonth, includeDuplicates]);
 
   if (!isOpen) return null;
 
@@ -137,6 +141,7 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
       }
 
       setRawCsvCache(csv);
+      setIncludeDuplicates(false);
       const items = parseCSVTransactions(csv, targetMonth);
       if (items.length === 0) {
         throw new Error(
@@ -144,6 +149,7 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
         );
       }
 
+      setAllParsedItems(items);
       const { unique, duplicateCount } = filterDuplicateTransactions(
         items,
         existingForTargetMonth
@@ -152,11 +158,12 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
       setSkippedDuplicatesCount(duplicateCount);
       if (unique.length === 0 && duplicateCount > 0) {
         setErrorMsg(
-          `All ${duplicateCount} transaction(s) in this file already exist in ${targetMonth} (same Date, Category & Description). Duplicates were skipped.`
+          `All ${duplicateCount} transaction(s) in this file match existing entries in ${targetMonth} (same Date, Type, Category, Description & Amount).`
         );
       }
     } catch (err: any) {
       setErrorMsg(err?.message || 'Failed to parse file');
+      setAllParsedItems([]);
       setParsedPreview([]);
       setSkippedDuplicatesCount(0);
       setRawCsvCache('');
@@ -191,10 +198,12 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
       };
     });
 
-    onImportTransactions(finalTransactions, targetMonth, derivedMonthName);
+    onImportTransactions(finalTransactions, targetMonth, derivedMonthName, includeDuplicates);
     setSelectedFile(null);
+    setAllParsedItems([]);
     setParsedPreview([]);
     setSkippedDuplicatesCount(0);
+    setIncludeDuplicates(false);
     setRawCsvCache('');
     setErrorMsg(null);
     onClose();
@@ -287,16 +296,32 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
             </div>
           )}
 
+          {skippedDuplicatesCount > 0 && allParsedItems.length > 0 && (
+            <label
+              className={`flex items-center justify-between gap-3 p-2.5 rounded-md border ${borderClass} ${subtleSurfaceClass} text-xs cursor-pointer`}
+            >
+              <span className={textMuted}>
+                {skippedDuplicatesCount} duplicate row{skippedDuplicatesCount === 1 ? '' : 's'} detected. Import anyway?
+              </span>
+              <input
+                type="checkbox"
+                checked={includeDuplicates}
+                onChange={(e) => setIncludeDuplicates(e.target.checked)}
+                className="accent-amber-500 w-4 h-4 cursor-pointer"
+              />
+            </label>
+          )}
+
           {/* Parsed Preview */}
           {parsedPreview.length > 0 && (
             <div className="space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
                 <span className="flex items-center gap-1.5 font-medium">
                   <Check className="w-3.5 h-3.5 text-amber-500 stroke-[2.5]" />
-                  Ready to import {parsedPreview.length} new transaction{parsedPreview.length === 1 ? '' : 's'}
+                  Ready to import {parsedPreview.length} transaction{parsedPreview.length === 1 ? '' : 's'}
                 </span>
                 <span className={textMuted}>
-                  {skippedDuplicatesCount > 0
+                  {skippedDuplicatesCount > 0 && !includeDuplicates
                     ? `${skippedDuplicatesCount} duplicate(s) skipped • Month: ${targetMonth}`
                     : `Month: ${targetMonth}`}
                 </span>

@@ -11,16 +11,13 @@ import {
   INITIAL_MONTH_NAME,
   INITIAL_EXPENSE_BUDGETS_NOV,
   INITIAL_INCOME_BUDGETS_NOV,
-  INITIAL_TRANSACTIONS_NOV,
-  INITIAL_MONTH_OCT,
-  INITIAL_TRANSACTIONS_OCT,
 } from './data/initialData';
 import {
   calculateSummary,
   calculateWeekNumber,
   getMonthIdFromDate,
   formatMonthIdToName,
-  isDailySyncDue,
+  parseMonthIdFromDriveTitle,
   filterDuplicateTransactions,
   formatLocalYYYYMMDD,
   DEFAULT_EXPENSE_CATEGORIES,
@@ -32,6 +29,8 @@ import {
   DriveFileInfo,
   importTransactionsFromGoogleSheet,
   syncToGoogleDrive,
+  revalidateSessionToken,
+  getTokenExpiresAt,
 } from './services/googleDriveService';
 
 // View Components
@@ -166,6 +165,37 @@ export default function App() {
       if (typeof unsubscribe === 'function') unsubscribe();
     };
   }, []);
+
+  // Mid-session token expiry watcher: automatically transitions to "Reconnect Google" when token TTL elapses
+  useEffect(() => {
+    if (!accessToken) return;
+
+    const checkExpiry = () => {
+      revalidateSessionToken();
+    };
+
+    const expiresAt = getTokenExpiresAt();
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+    if (expiresAt) {
+      const delayMs = Math.max(500, expiresAt - Date.now() + 100);
+      timerId = setTimeout(checkExpiry, delayMs);
+    }
+
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        checkExpiry();
+      }
+    };
+
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
+    return () => {
+      if (timerId) clearTimeout(timerId);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+    };
+  }, [accessToken]);
 
   // Persist to local storage
   useEffect(() => {
@@ -377,23 +407,47 @@ export default function App() {
     );
   };
 
-  // Delete category from budgets
-  const handleDeleteCategory = (catName: string, type: 'expense' | 'income') => {
+  // Delete category from budgets and reassign any affected transactions so none are orphaned
+  const handleDeleteCategory = (
+    catName: string,
+    type: 'expense' | 'income',
+    reassignToCategory?: string
+  ) => {
+    const hasAffectedTransactions = transactions.some(
+      (t) => t.type === type && t.category === catName
+    );
+    const fallbackCat =
+      reassignToCategory || (type === 'expense' ? 'Unplanned' : 'Other');
+
     setMonths((prev) => {
       const next: Record<string, MonthlyBudget> = {};
       for (const [mId, b] of Object.entries(prev)) {
         if (type === 'expense') {
           const copy = { ...b.expenseBudgets };
           delete copy[catName];
+          if (hasAffectedTransactions && !(fallbackCat in copy)) {
+            copy[fallbackCat] = 0;
+          }
           next[mId] = { ...b, expenseBudgets: copy };
         } else {
           const copy = { ...b.incomeBudgets };
           delete copy[catName];
+          if (hasAffectedTransactions && !(fallbackCat in copy)) {
+            copy[fallbackCat] = 0;
+          }
           next[mId] = { ...b, incomeBudgets: copy };
         }
       }
       return next;
     });
+
+    if (hasAffectedTransactions) {
+      setTransactions((prev) =>
+        prev.map((t) =>
+          t.type === type && t.category === catName ? { ...t, category: fallbackCat } : t
+        )
+      );
+    }
   };
 
   const handleResetCurrentMonthCategories = () => {
@@ -407,20 +461,30 @@ export default function App() {
     }));
   };
 
-  const handleResetToDefaults = () => {
+  const handleResetToDefaults = (
+    forceWithoutBackup = false
+  ): { ok: boolean; error?: string } => {
     // Save a timestamped backup before destructive reset and prune old backups to the latest 3 (P0-5)
     try {
-      const backupKey = `hvr_expense_backup_${Date.now()}`;
-      localStorage.setItem(backupKey, JSON.stringify({ months, transactions }));
-      const allBackupKeys = Object.keys(localStorage)
+      const existingBackups = Object.keys(localStorage)
         .filter((k) => k.startsWith('hvr_expense_backup_'))
         .sort();
-      while (allBackupKeys.length > 3) {
-        const oldest = allBackupKeys.shift();
+      while (existingBackups.length >= 3) {
+        const oldest = existingBackups.shift();
         if (oldest) localStorage.removeItem(oldest);
       }
-    } catch (e) {
+      const backupKey = `hvr_expense_backup_${Date.now()}`;
+      localStorage.setItem(backupKey, JSON.stringify({ months, transactions }));
+    } catch (e: any) {
       console.warn('Could not save reset backup to localStorage:', e);
+      if (!forceWithoutBackup) {
+        return {
+          ok: false,
+          error:
+            e?.message ||
+            'Unable to save recovery snapshot in browser storage (storage quota may be full).',
+        };
+      }
     }
 
     setMonths({
@@ -434,6 +498,7 @@ export default function App() {
     });
     setTransactions([]);
     setActiveMonthId(INITIAL_MONTH_ID);
+    return { ok: true };
   };
 
   // Create a new month board explicitly
@@ -456,7 +521,8 @@ export default function App() {
   const handleImportTransactions = (
     imported: Transaction[],
     targetMonthId: string,
-    targetMonthName: string
+    targetMonthName: string,
+    includeDuplicates = false
   ) => {
     const resolvedMonthName = targetMonthName || formatMonthIdToName(targetMonthId);
     setMonths((prev) => {
@@ -480,6 +546,9 @@ export default function App() {
     }));
 
     setTransactions((prev) => {
+      if (includeDuplicates) {
+        return [...normalizedImported, ...prev];
+      }
       const existingInMonth = prev.filter((t) => t.monthId === targetMonthId);
       const { unique } = filterDuplicateTransactions(normalizedImported, existingInMonth);
       return [...unique, ...prev];
@@ -489,13 +558,15 @@ export default function App() {
   };
 
   const handleImportFromDriveFile = async (file: DriveFileInfo) => {
-    if (!accessToken) {
-      throw new Error('Please reconnect Google Drive before importing.');
+    const activeToken = revalidateSessionToken() || accessToken;
+    if (!activeToken) {
+      throw new Error('Your Google session expired. Please click "Reconnect Google".');
     }
+    const inferredMonthId = parseMonthIdFromDriveTitle(file.name) || activeMonthId;
     const items = await importTransactionsFromGoogleSheet(
-      accessToken,
+      activeToken,
       file.id,
-      activeMonthId
+      inferredMonthId
     );
     if (items.length === 0) {
       throw new Error(`No valid transactions found in "${file.name}".`);
@@ -892,6 +963,8 @@ export default function App() {
         {activeTab === 'category' && (
           <CategoryManagerView
             budget={currentBudget}
+            transactions={transactions}
+            resetTargetMonthName={INITIAL_MONTH_NAME}
             onUpdateBudget={handleUpdateBudget}
             onRenameCategory={handleRenameCategory}
             onDeleteCategory={handleDeleteCategory}
