@@ -1,4 +1,7 @@
 import { Transaction, MonthlySummary, CategoryBudget } from '../types';
+import { formatLocalYYYYMMDD, parseFlexibleDate } from './dateParsing';
+
+export { formatLocalYYYYMMDD, parseFlexibleDate };
 
 export const DEFAULT_EXPENSE_CATEGORIES = [
   'Food',
@@ -64,7 +67,7 @@ const MONTH_SHORT_NAMES = [
  */
 export function getMonthIdFromDate(dateStr: string): string {
   if (!dateStr || dateStr.length < 7) {
-    return new Date().toISOString().slice(0, 7);
+    return formatLocalYYYYMMDD().slice(0, 7);
   }
   return dateStr.slice(0, 7);
 }
@@ -99,7 +102,7 @@ export function formatDriveFileTitle(monthId: string): string {
  */
 export function isDailySyncDue(lastSyncedAt: number | undefined, todayDateStr: string): boolean {
   if (!lastSyncedAt) return true;
-  const syncedDateStr = new Date(lastSyncedAt).toISOString().slice(0, 10);
+  const syncedDateStr = formatLocalYYYYMMDD(new Date(lastSyncedAt));
   return syncedDateStr !== todayDateStr;
 }
 
@@ -265,36 +268,26 @@ export function calculateWeeklyMatrix(
 /**
  * Parse a raw date string and align it with the target defaultMonthId (YYYY-MM)
  */
-function normalizeImportedDate(rawDate: string, defaultMonthId: string): string {
+export function normalizeImportedDate(rawDate: string, defaultMonthId: string): string {
   const cleanMonth = /^\d{4}-\d{2}$/.test(defaultMonthId)
     ? defaultMonthId
-    : new Date().toISOString().slice(0, 7);
+    : formatLocalYYYYMMDD().slice(0, 7);
 
   if (!rawDate || !rawDate.trim()) {
     return `${cleanMonth}-01`;
   }
 
-  const trimmed = rawDate.trim();
   let day = 1;
-
-  // Case 1: YYYY-MM-DD or YYYY/MM/DD
-  const isoMatch = trimmed.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
-  if (isoMatch) {
-    day = parseInt(isoMatch[3], 10);
+  const flexParsed = parseFlexibleDate(rawDate);
+  if (flexParsed) {
+    day = parseInt(flexParsed.split('-')[2] || '1', 10);
   } else {
-    // Case 2: DD-MM-YYYY or DD/MM/YYYY or MM/DD/YYYY
+    const trimmed = rawDate.trim();
     const dmyMatch = trimmed.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/);
     if (dmyMatch) {
       const first = parseInt(dmyMatch[1], 10);
       const second = parseInt(dmyMatch[2], 10);
-      // If first <= 31 and second <= 12, treat as DD/MM/YYYY; if second > 12, treat as MM/DD/YYYY
       day = second > 12 ? second : first;
-    } else {
-      // Case 3: Standard Date.parse fallback
-      const parsed = new Date(trimmed);
-      if (!isNaN(parsed.getTime())) {
-        day = parsed.getDate();
-      }
     }
   }
 
@@ -319,22 +312,72 @@ export function generateSampleCSVContent(monthId: string = '2026-11'): string {
 }
 
 /**
+ * RFC 4180 compliant CSV state-machine parser.
+ * - Only double quotes (`"`) act as quote delimiters; apostrophes (`'`) are preserved as normal characters.
+ * - Supports escaped double quotes (`""` -> `"`).
+ * - Supports commas and newlines (`\n`, `\r\n`) inside quoted fields.
+ * - Strips leading UTF-8 BOM (`\uFEFF`).
+ */
+export function parseCSVRows(csvText: string): string[][] {
+  const text = (csvText || '').replace(/^\uFEFF/, '');
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i++; // Escaped double quote ""
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      row.push(field);
+      field = '';
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') {
+        i++;
+      }
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = '';
+    } else {
+      field += ch;
+    }
+  }
+
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+
+  return rows.filter((r) => r.some((cell) => cell.trim() !== ''));
+}
+
+/**
  * Parse CSV text into Transaction objects assigned to defaultMonthId
  */
 export function parseCSVTransactions(csvText: string, defaultMonthId: string): Partial<Transaction>[] {
-  const lines = csvText
-    .replace(/^\uFEFF/, '') // Strip UTF-8 BOM if present
-    .split(/\r?\n/)
-    .filter((l) => l.trim().length > 0);
-  if (lines.length === 0) return [];
+  const rows = parseCSVRows(csvText);
+  if (rows.length === 0) return [];
 
   const targetMonthId = /^\d{4}-\d{2}$/.test(defaultMonthId)
     ? defaultMonthId
-    : new Date().toISOString().slice(0, 7);
+    : formatLocalYYYYMMDD().slice(0, 7);
 
-  // Inspect headers
-  const headerLine = lines[0].toLowerCase();
-  const headers = headerLine.split(',').map((h) => h.trim().replace(/^["']|["']$/g, ''));
+  // Inspect headers using parsed row 0
+  const headers = rows[0].map((h) => h.trim().toLowerCase());
 
   const dateIdx = headers.findIndex((h) => h.includes('date') || h === 'day');
   const categoryIdx = headers.findIndex((h) => h.includes('cat'));
@@ -360,37 +403,34 @@ export function parseCSVTransactions(csvText: string, defaultMonthId: string): P
   );
   const typeIdx = headers.findIndex((h) => h.includes('type'));
 
-  // Determine if line 0 is a header row or data row
+  // Determine if row 0 is a header row or data row
   const hasRecognizedHeader = dateIdx >= 0 || categoryIdx >= 0 || amountIdx >= 0 || descIdx >= 0;
   const startIdx = hasRecognizedHeader ? 1 : 0;
 
   const result: Partial<Transaction>[] = [];
 
-  for (let i = startIdx; i < lines.length; i++) {
-    // Simple CSV parser supporting quotes
-    const row: string[] = [];
-    let current = '';
-    let inQuotes = false;
-    for (let c = 0; c < lines[i].length; c++) {
-      const char = lines[i][c];
-      if (char === '"' || char === "'") {
-        inQuotes = !inQuotes;
-      } else if (char === ',' && !inQuotes) {
-        row.push(current.trim());
-        current = '';
-      } else {
-        current += char;
-      }
-    }
-    row.push(current.trim());
+  for (let i = startIdx; i < rows.length; i++) {
+    const rawRow = rows[i];
+    if (!rawRow || rawRow.length === 0 || rawRow.every((c) => !c.trim())) continue;
 
-    if (row.length === 0 || row.every((c) => !c)) continue;
+    // Pad short rows safely so column indices never access undefined or shift
+    const getCell = (idx: number): string =>
+      idx >= 0 && idx < rawRow.length ? rawRow[idx].trim() : '';
 
-    const rawDate = dateIdx >= 0 ? row[dateIdx] : !hasRecognizedHeader ? row[0] : '';
-    const rawCat = categoryIdx >= 0 ? row[categoryIdx] : !hasRecognizedHeader ? row[1] : 'Other';
-    const rawDesc = descIdx >= 0 ? row[descIdx] : !hasRecognizedHeader ? row[2] : rawCat || 'Imported transaction';
-    const rawAmt = amountIdx >= 0 ? row[amountIdx] : !hasRecognizedHeader ? row[3] || row[2] : '0';
-    const rawType = typeIdx >= 0 ? row[typeIdx]?.toLowerCase() : '';
+    const rawDate = dateIdx >= 0 ? getCell(dateIdx) : !hasRecognizedHeader ? getCell(0) : '';
+    const rawCat =
+      (categoryIdx >= 0 ? getCell(categoryIdx) : !hasRecognizedHeader ? getCell(1) : '') || 'Other';
+    const rawDesc =
+      (descIdx >= 0 ? getCell(descIdx) : !hasRecognizedHeader ? getCell(2) : '') ||
+      rawCat ||
+      'Imported transaction';
+    const rawAmt =
+      amountIdx >= 0
+        ? getCell(amountIdx)
+        : !hasRecognizedHeader
+        ? getCell(3) || getCell(2)
+        : '0';
+    const rawType = typeIdx >= 0 ? getCell(typeIdx).toLowerCase() : '';
 
     // Clean amount (strip currency symbols and commas, support negative numbers as positive magnitudes)
     const numericAmt = Math.abs(parseFloat((rawAmt || '0').replace(/[^0-9.-]/g, '')) || 0);
@@ -401,13 +441,13 @@ export function parseCSVTransactions(csvText: string, defaultMonthId: string): P
     const isIncome =
       rawType.includes('income') ||
       rawType.includes('credit') ||
-      (rawCat || '').toLowerCase().includes('paycheck') ||
-      (rawCat || '').toLowerCase().includes('salary');
+      rawCat.toLowerCase().includes('paycheck') ||
+      rawCat.toLowerCase().includes('salary');
 
     result.push({
       date: normalizedDate,
-      category: (rawCat && rawCat.trim()) || 'Other',
-      description: (rawDesc && rawDesc.trim()) || (rawCat && rawCat.trim()) || 'Imported item',
+      category: rawCat || 'Other',
+      description: rawDesc || rawCat || 'Imported item',
       amount: numericAmt,
       type: isIncome ? 'income' : 'expense',
       weekNumber: calculateWeekNumber(normalizedDate),

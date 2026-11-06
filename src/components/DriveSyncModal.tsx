@@ -7,9 +7,12 @@ import {
   generateExcelWorkbookBlob,
   listExpenseSheetsFromDrive,
   DriveFileInfo,
+  getEffectiveGoogleClientId,
+  getCustomGoogleClientId,
+  setCustomGoogleClientId,
 } from '../services/googleDriveService';
 import { MonthlySummary, Transaction, MonthlyBudget } from '../types';
-import { formatDriveFileTitle, isDailySyncDue } from '../utils/expenseCalculations';
+import { formatDriveFileTitle, isDailySyncDue, formatLocalYYYYMMDD } from '../utils/expenseCalculations';
 import {
   Cloud,
   Download,
@@ -20,6 +23,10 @@ import {
   LogOut,
   RefreshCw,
   Clock,
+  Key,
+  Settings,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 interface DriveSyncModalProps {
@@ -30,9 +37,11 @@ interface DriveSyncModalProps {
   budget: MonthlyBudget;
   currentUser: User | null;
   accessToken: string | null;
+  needsGoogleReconnect?: boolean;
+  autoSyncError?: string | null;
   onAuthSuccess: (user: User, token: string) => void;
   onAuthLogout: () => void;
-  onImportDriveSheet: (file: DriveFileInfo) => void;
+  onImportDriveSheet: (file: DriveFileInfo) => Promise<void> | void;
   onUpdateBudget?: (updated: MonthlyBudget) => void;
   dailyAutoSync?: boolean;
   onToggleDailyAutoSync?: (enabled: boolean) => void;
@@ -47,6 +56,8 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
   budget,
   currentUser,
   accessToken,
+  needsGoogleReconnect = false,
+  autoSyncError = null,
   onAuthSuccess,
   onAuthLogout,
   onImportDriveSheet,
@@ -58,6 +69,10 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [isPopupClosedError, setIsPopupClosedError] = useState(false);
+  const [isAccessDeniedError, setIsAccessDeniedError] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [customClientIdInput, setCustomClientIdInput] = useState(() => getCustomGoogleClientId());
+  const [clientIdSavedMessage, setClientIdSavedMessage] = useState(false);
 
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{
@@ -78,9 +93,10 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
   if (!isOpen) return null;
 
   const targetFileTitle = formatDriveFileTitle(summary.monthId);
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = formatLocalYYYYMMDD();
   const syncedToday = !isDailySyncDue(budget.lastSyncedAt, todayStr);
   const currentHostname = typeof window !== 'undefined' ? window.location.hostname : '';
+  const hasActiveDriveSession = Boolean(currentUser && accessToken);
 
   // Surface classes
   const surfaceClass = isDark
@@ -99,6 +115,7 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
     setIsLoggingIn(true);
     setAuthError(null);
     setIsPopupClosedError(false);
+    setIsAccessDeniedError(false);
     try {
       const res = await googleSignIn();
       if (res) {
@@ -107,6 +124,16 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
     } catch (err: any) {
       const code = String(err?.code || err?.message || '');
       if (
+        code.includes('access_denied') ||
+        code.includes('403') ||
+        code.includes('testing') ||
+        code.includes('developer-approved')
+      ) {
+        setIsAccessDeniedError(true);
+        setAuthError(
+          'App is in Testing Mode (Error 403: access_denied). Test user permission required.'
+        );
+      } else if (
         code.includes('popup-closed-by-user') ||
         code.includes('popup_closed_by_user') ||
         code.includes('popup-blocked') ||
@@ -181,12 +208,13 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const handleFetchDriveFiles = async () => {
     if (!accessToken) return;
     setIsLoadingFiles(true);
+    setSyncError(null);
     try {
       const files = await listExpenseSheetsFromDrive(accessToken);
       setDriveFiles(files);
@@ -194,6 +222,15 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
       setSyncError(err?.message || 'Could not scan Drive sheets');
     } finally {
       setIsLoadingFiles(false);
+    }
+  };
+
+  const handleImportSheetClick = async (file: DriveFileInfo) => {
+    setSyncError(null);
+    try {
+      await onImportDriveSheet(file);
+    } catch (err: any) {
+      setSyncError(err?.message || 'Failed to import Google Sheet');
     }
   };
 
@@ -240,21 +277,38 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
                   <p className="text-xs font-medium truncate">
                     {currentUser ? currentUser.displayName || 'Google Account' : 'Not Authenticated'}
                   </p>
-                  <p className={`text-[11px] ${textMuted} font-mono truncate`}>
-                    {currentUser ? currentUser.email : 'Sign in to sync with Google Drive'}
+                  <p className={`text-[11px] ${currentUser && !accessToken ? 'text-amber-500' : textMuted} font-mono truncate`}>
+                    {currentUser
+                      ? accessToken
+                        ? currentUser.email
+                        : `${currentUser.email || 'Account restored'} (Reconnect required)`
+                      : 'Sign in to sync with Google Drive'}
                   </p>
                 </div>
               </div>
 
               {currentUser ? (
-                <button
-                  type="button"
-                  onClick={handleLogout}
-                  className={`px-2.5 py-1 text-xs font-mono ${textMuted} hover:text-inherit flex items-center gap-1 cursor-pointer shrink-0`}
-                >
-                  <LogOut className="w-3 h-3" />
-                  Sign Out
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  {(!accessToken || needsGoogleReconnect) && (
+                    <button
+                      type="button"
+                      onClick={handleSignIn}
+                      disabled={isLoggingIn}
+                      className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-medium rounded-md transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
+                    >
+                      {isLoggingIn ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                      Reconnect Google
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className={`px-2.5 py-1 text-xs font-mono ${textMuted} hover:text-inherit flex items-center gap-1 cursor-pointer shrink-0`}
+                  >
+                    <LogOut className="w-3 h-3" />
+                    Sign Out
+                  </button>
+                </div>
               ) : (
                 <div className="flex items-center gap-2 shrink-0">
                   <button
@@ -275,7 +329,56 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
             {authError && (
               <div className={`mt-3 p-3 rounded-md border border-amber-500/40 ${surfaceClass} space-y-2.5 text-xs`}>
                 <p className="text-amber-500 font-medium">{authError}</p>
-                {isPopupClosedError && (
+
+                {isAccessDeniedError && (
+                  <div className={`space-y-2 text-[11px] ${textMuted} leading-relaxed`}>
+                    <p className="text-zinc-200">
+                      When a Google OAuth app is in <strong>Testing</strong> mode, Google only permits accounts listed under <strong>Test Users</strong>:
+                    </p>
+                    <ol className="list-decimal pl-4 space-y-1 text-zinc-300">
+                      <li>
+                        Open{' '}
+                        <a
+                          href="https://console.cloud.google.com/apis/credentials/consent"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-amber-500 underline inline-flex items-center gap-0.5 font-medium"
+                        >
+                          Google Cloud &rarr; OAuth Consent Screen <ExternalLink className="w-2.5 h-2.5" />
+                        </a>
+                      </li>
+                      <li>
+                        Scroll down to <strong>Test users</strong> and click <strong>+ ADD USERS</strong>.
+                      </li>
+                      <li>
+                        Enter your Google email address and click <strong>Save</strong>.
+                      </li>
+                      <li>
+                        <em>(Alternative)</em> Under <strong>Publishing status</strong>, click <strong>PUBLISH APP</strong> to allow any Google user to access without being added as a test user.
+                      </li>
+                    </ol>
+                    <div className="pt-1 flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSignIn}
+                        disabled={isLoggingIn}
+                        className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 rounded-md text-xs font-medium cursor-pointer"
+                      >
+                        Retry Connect Google
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowSettings(!showSettings)}
+                        className={`px-3 py-1.5 rounded-md text-xs font-mono border ${borderClass} ${subtleSurfaceClass} flex items-center gap-1 cursor-pointer`}
+                      >
+                        <Key className="w-3 h-3 text-amber-500" />
+                        {showSettings ? 'Hide Client ID' : 'Client ID Settings'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {isPopupClosedError && !isAccessDeniedError && (
                   <>
                     <div className={`space-y-1.5 text-[11px] ${textMuted} leading-relaxed`}>
                       <p>
@@ -305,6 +408,80 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
                 )}
               </div>
             )}
+
+            {/* Custom OAuth Client ID Section */}
+            <div className={`mt-3 pt-3 border-t ${borderClass}`}>
+              <button
+                type="button"
+                onClick={() => setShowSettings(!showSettings)}
+                className={`w-full flex items-center justify-between text-[11px] ${textMuted} hover:${textSubtle} cursor-pointer`}
+              >
+                <span className="flex items-center gap-1 font-medium">
+                  <Settings className="w-3 h-3 text-amber-500" />
+                  Google OAuth Client ID Configuration
+                </span>
+                {showSettings ? (
+                  <ChevronUp className="w-3 h-3" />
+                ) : (
+                  <ChevronDown className="w-3 h-3" />
+                )}
+              </button>
+
+              {showSettings && (
+                <div className="mt-2.5 space-y-2 text-xs">
+                  <p className={`text-[10px] font-mono ${textMuted}`}>
+                    Active Client ID:
+                  </p>
+                  <div className="p-2 rounded bg-black/40 font-mono text-[10px] break-all border border-zinc-800 text-zinc-300">
+                    {getEffectiveGoogleClientId()}
+                  </div>
+                  <div className="space-y-1">
+                    <label className="block text-[11px] text-zinc-300">
+                      Custom Client ID (Optional &mdash; if using your own Google Cloud project):
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={customClientIdInput}
+                        onChange={(e) => setCustomClientIdInput(e.target.value)}
+                        placeholder="123456789-xyz.apps.googleusercontent.com"
+                        className={`flex-1 px-2.5 py-1.5 rounded border ${borderClass} bg-transparent font-mono text-xs focus:outline-none focus:border-amber-500`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomGoogleClientId(customClientIdInput);
+                          setClientIdSavedMessage(true);
+                          setTimeout(() => setClientIdSavedMessage(false), 3000);
+                        }}
+                        className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-medium rounded text-xs cursor-pointer shrink-0"
+                      >
+                        Save
+                      </button>
+                      {customClientIdInput && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCustomClientIdInput('');
+                            setCustomGoogleClientId('');
+                            setClientIdSavedMessage(true);
+                            setTimeout(() => setClientIdSavedMessage(false), 3000);
+                          }}
+                          className={`px-2 py-1.5 border ${borderClass} ${textMuted} hover:text-inherit rounded text-xs cursor-pointer shrink-0`}
+                        >
+                          Reset
+                        </button>
+                      )}
+                    </div>
+                    {clientIdSavedMessage && (
+                      <p className="text-[11px] text-emerald-400 font-mono mt-1">
+                        ✓ Client ID configuration saved
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Daily Auto-Sync on App Open Setting */}
@@ -370,9 +547,9 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
             </div>
           )}
 
-          {syncError && (
+          {(syncError || autoSyncError) && (
             <div className={`p-3 rounded-md border ${borderClass} ${subtleSurfaceClass} text-xs text-amber-500 font-mono`}>
-              {syncError}
+              {syncError || autoSyncError}
             </div>
           )}
 
@@ -381,9 +558,9 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
             <button
               type="button"
               onClick={handleInitiateSync}
-              disabled={isSyncing || !currentUser}
+              disabled={isSyncing || !hasActiveDriveSession}
               className={`p-4 rounded-md border text-left transition-all flex flex-col justify-between ${
-                currentUser
+                hasActiveDriveSession
                   ? `border-amber-500/30 ${subtleSurfaceClass} hover:border-amber-500/60 cursor-pointer`
                   : `opacity-40 border-dashed ${borderClass} cursor-not-allowed`
               }`}
@@ -423,7 +600,7 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
           </div>
 
           {/* Drive Spreadsheets Scanner */}
-          {currentUser && (
+          {hasActiveDriveSession && (
             <div className={`pt-4 border-t ${borderClass} space-y-3`}>
               <div className="flex items-center justify-between">
                 <div>
@@ -455,7 +632,7 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
                       <span className="font-medium truncate pr-2">{file.name}</span>
                       <button
                         type="button"
-                        onClick={() => onImportDriveSheet(file)}
+                        onClick={() => handleImportSheetClick(file)}
                         className={`px-2 py-0.5 text-xs font-mono rounded border ${borderClass} hover:opacity-80 transition-opacity cursor-pointer`}
                       >
                         Import

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { MonthlyBudget } from '../types';
 import { formatINR } from '../utils/expenseCalculations';
-import { Plus, Check, RotateCcw, Edit2, Trash2, X } from 'lucide-react';
+import { Plus, Check, RotateCcw, Edit2, Trash2, X, AlertTriangle } from 'lucide-react';
 
 interface CategoryManagerViewProps {
   budget: MonthlyBudget;
@@ -9,6 +9,7 @@ interface CategoryManagerViewProps {
   onRenameCategory: (oldName: string, newName: string, type: 'expense' | 'income') => void;
   onDeleteCategory: (catName: string, type: 'expense' | 'income') => void;
   onResetToDefaults: () => void;
+  onResetCurrentMonthCategories?: () => void;
   isDark?: boolean;
 }
 
@@ -18,6 +19,7 @@ export const CategoryManagerView: React.FC<CategoryManagerViewProps> = ({
   onRenameCategory,
   onDeleteCategory,
   onResetToDefaults,
+  onResetCurrentMonthCategories,
   isDark = false,
 }) => {
   const [expenseBudgets, setExpenseBudgets] = useState<Record<string, number>>(budget.expenseBudgets);
@@ -43,6 +45,7 @@ export const CategoryManagerView: React.FC<CategoryManagerViewProps> = ({
   const [newCatType, setNewCatType] = useState<'expense' | 'income'>('expense');
 
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [showResetConfirmModal, setShowResetConfirmModal] = useState(false);
 
   // Surface classes (60-30-10 rule)
   const surfaceClass = isDark
@@ -150,13 +153,15 @@ export const CategoryManagerView: React.FC<CategoryManagerViewProps> = ({
 
         <div className="flex items-center gap-2">
           <button
-            onClick={onResetToDefaults}
+            type="button"
+            onClick={() => setShowResetConfirmModal(true)}
             className={`px-3 py-1.5 rounded-md text-xs font-medium border ${borderClass} ${subtleSurfaceClass} ${textMuted} hover:text-inherit flex items-center gap-1.5 cursor-pointer`}
           >
             <RotateCcw className="w-3.5 h-3.5" />
             Reset Defaults
           </button>
           <button
+            type="button"
             onClick={handleSaveAll}
             className="px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-medium rounded-md shadow-2xs flex items-center gap-1.5 cursor-pointer"
           >
@@ -410,6 +415,85 @@ export const CategoryManagerView: React.FC<CategoryManagerViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Mandatory Destructive Reset Confirmation Modal (P0-5) */}
+      {showResetConfirmModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="reset-confirm-title"
+        >
+          <div className={`border rounded-lg shadow-2xl max-w-md w-full p-6 space-y-4 ${surfaceClass}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-md bg-amber-500/15 text-amber-500 shrink-0">
+                  <AlertTriangle className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 id="reset-confirm-title" className="text-sm font-medium tracking-tight">
+                    Confirm Reset
+                  </h4>
+                  <p className={`text-[11px] font-mono ${textMuted}`}>
+                    Destructive action confirmation
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowResetConfirmModal(false)}
+                aria-label="Close confirmation dialog"
+                className={`${textSubtle} hover:text-inherit p-1 cursor-pointer`}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className={`text-xs ${textMuted} space-y-2 leading-relaxed`}>
+              <p>
+                This will permanently delete all transactions and reset every month board except{' '}
+                <strong className="text-inherit">Nov-26 Expenses</strong>. Custom categories and budgets will be lost. This cannot be undone.
+              </p>
+              <p className="text-[11px] font-mono">
+                A timestamped recovery snapshot will be saved automatically in browser storage before resetting.
+              </p>
+            </div>
+
+            <div className={`pt-3 border-t ${borderClass} flex flex-wrap items-center justify-end gap-2`}>
+              <button
+                type="button"
+                autoFocus
+                onClick={() => setShowResetConfirmModal(false)}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium border ${borderClass} ${subtleSurfaceClass} cursor-pointer`}
+              >
+                Cancel
+              </button>
+              {onResetCurrentMonthCategories && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onResetCurrentMonthCategories();
+                    setShowResetConfirmModal(false);
+                  }}
+                  className={`px-3 py-1.5 rounded-md text-xs font-medium border border-amber-500/40 text-amber-500 hover:bg-amber-500/10 cursor-pointer`}
+                >
+                  Reset Categories Only ({budget.monthName})
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  onResetToDefaults();
+                  setShowResetConfirmModal(false);
+                }}
+                className="px-3.5 py-1.5 rounded-md text-xs font-medium bg-red-600 hover:bg-red-500 text-white cursor-pointer"
+              >
+                Reset Everything
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

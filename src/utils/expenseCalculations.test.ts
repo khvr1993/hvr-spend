@@ -332,4 +332,41 @@ test('exportTransactionsToCSV exports transactions in exact re-uploadable CSV fo
   assert.equal(unique[0].description, 'Cab to Airport');
 });
 
+test('P0-3: parseCSVTransactions preserves apostrophes, escaped double quotes, multiline fields, BOM, CRLF, and handles short rows', () => {
+  const csvWithApostrophesAndQuotes =
+    '\uFEFF"Date","Category","Description, Notes","Amount","Type"\r\n' +
+    '2026-11-02,Food,John\'s cafe,250,Expense\r\n' +
+    '2026-11-03,Home,O\'Brien\'s hardware,500,Expense\r\n' +
+    '2026-11-04,Food,"Lunch, office ""special""",350,Expense\r\n' +
+    '2026-11-05,Shopping,"Line 1\nLine 2 item",1200,Expense\r\n' +
+    '2026-11-06,Food,\'single quoted text\',180,Expense\r\n' +
+    '2026-11-07,Food\r\n'; // Short row with no amount -> safely skipped without throwing
+
+  const items = parseCSVTransactions(csvWithApostrophesAndQuotes, '2026-11');
+  assert.equal(items.length, 5);
+
+  assert.equal(items[0].date, '2026-11-02');
+  assert.equal(items[0].category, 'Food');
+  assert.equal(items[0].description, "John's cafe");
+  assert.equal(items[0].amount, 250);
+
+  assert.equal(items[1].date, '2026-11-03');
+  assert.equal(items[1].category, 'Home');
+  assert.equal(items[1].description, "O'Brien's hardware");
+  assert.equal(items[1].amount, 500);
+
+  assert.equal(items[2].date, '2026-11-04');
+  assert.equal(items[2].description, 'Lunch, office "special"');
+  assert.equal(items[2].amount, 350);
+
+  assert.equal(items[3].date, '2026-11-05');
+  assert.equal(items[3].description, 'Line 1\nLine 2 item');
+  assert.equal(items[3].amount, 1200);
+
+  assert.equal(items[4].date, '2026-11-06');
+  assert.equal(items[4].description, "'single quoted text'");
+  assert.equal(items[4].amount, 180);
+});
+
+
 

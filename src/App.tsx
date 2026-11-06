@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { User } from 'firebase/auth';
 import {
   MonthlyBudget,
@@ -22,9 +22,11 @@ import {
   formatMonthIdToName,
   isDailySyncDue,
   filterDuplicateTransactions,
+  formatLocalYYYYMMDD,
   DEFAULT_EXPENSE_CATEGORIES,
   DEFAULT_INCOME_CATEGORIES,
 } from './utils/expenseCalculations';
+import { createAutoSyncController } from './utils/autoSync';
 import {
   initAuth,
   DriveFileInfo,
@@ -106,13 +108,15 @@ export default function App() {
   // Auth & Drive
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [needsGoogleReconnect, setNeedsGoogleReconnect] = useState<boolean>(false);
   const [isDriveModalOpen, setIsDriveModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [dailyAutoSync, setDailyAutoSync] = useState<boolean>(() => {
     const saved = localStorage.getItem('expense_app_daily_autosync');
     return saved !== null ? saved === 'true' : true;
   });
-  const [isAutoSyncingDaily, setIsAutoSyncingDaily] = useState(false);
+  const [, setIsAutoSyncingDaily] = useState(false);
+  const [autoSyncError, setAutoSyncError] = useState<string | null>(null);
 
   // Create New Month Modal State
   const [isNewMonthModalOpen, setIsNewMonthModalOpen] = useState(false);
@@ -125,7 +129,7 @@ export default function App() {
   const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
   const [quickAddDesc, setQuickAddDesc] = useState('');
   const [quickAddAmount, setQuickAddAmount] = useState('');
-  const [quickAddDate, setQuickAddDate] = useState(new Date().toISOString().slice(0, 10));
+  const [quickAddDate, setQuickAddDate] = useState(() => formatLocalYYYYMMDD());
 
   // Sync theme to root class
   useEffect(() => {
@@ -139,16 +143,23 @@ export default function App() {
     }
   }, [isDark]);
 
-  // Auth listener
+  // Auth listener (distinguishes active token vs restored user needing reconnect vs signed out)
   useEffect(() => {
     const unsubscribe = initAuth(
       (user, token) => {
         setCurrentUser(user);
         setAccessToken(token);
+        setNeedsGoogleReconnect(false);
       },
       () => {
         setCurrentUser(null);
         setAccessToken(null);
+        setNeedsGoogleReconnect(false);
+      },
+      (user) => {
+        setCurrentUser(user);
+        setAccessToken(null);
+        setNeedsGoogleReconnect(true);
       }
     );
     return () => {
@@ -208,43 +219,62 @@ export default function App() {
     );
   }, [activeMonthId, currentBudget, transactions]);
 
+  // Refs for Daily Auto-Sync so in-flight state never triggers useEffect cleanup self-cancellation (P0-1)
+  const autoSyncControllerRef = useRef(createAutoSyncController());
+  const latestSyncDataRef = useRef({
+    summary: currentSummary,
+    transactions,
+    budget: currentBudget,
+    monthId: activeMonthId,
+  });
+
+  useEffect(() => {
+    latestSyncDataRef.current = {
+      summary: currentSummary,
+      transactions,
+      budget: currentBudget,
+      monthId: activeMonthId,
+    };
+  });
+
   // Daily Auto-Sync Once a Day when app opens and Google Drive is connected
   useEffect(() => {
-    if (!dailyAutoSync || !accessToken || isAutoSyncingDaily) return;
-    const todayStr = new Date().toISOString().slice(0, 10);
-    if (!isDailySyncDue(currentBudget.lastSyncedAt, todayStr)) return;
+    if (!dailyAutoSync || !accessToken) return;
+    const todayStr = formatLocalYYYYMMDD();
+    const { summary, transactions: latestTxs, budget, monthId } = latestSyncDataRef.current;
 
-    let cancelled = false;
-    setIsAutoSyncingDaily(true);
-    syncToGoogleDrive(
+    void autoSyncControllerRef.current.runIfDue({
+      dailyAutoSync,
       accessToken,
-      currentSummary,
-      transactions,
-      currentBudget,
-      currentBudget.driveFileId
-    )
-      .then((res) => {
-        if (cancelled) return;
+      todayStr,
+      monthId,
+      summary,
+      transactions: latestTxs,
+      budget,
+      syncFn: syncToGoogleDrive,
+      onSyncStart: () => {
+        setIsAutoSyncingDaily(true);
+        setAutoSyncError(null);
+      },
+      onSyncSuccess: (targetMonthId, driveFileId, syncedAt) => {
         setMonths((prev) => ({
           ...prev,
-          [activeMonthId]: {
-            ...currentBudget,
-            driveFileId: res.id,
-            lastSyncedAt: Date.now(),
+          [targetMonthId]: {
+            ...(prev[targetMonthId] ?? budget),
+            driveFileId,
+            lastSyncedAt: syncedAt,
           },
         }));
-      })
-      .catch((err) => {
-        console.error('Daily auto-sync error:', err);
-      })
-      .finally(() => {
-        if (!cancelled) setIsAutoSyncingDaily(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [dailyAutoSync, accessToken, activeMonthId, currentBudget, currentSummary, transactions, isAutoSyncingDaily]);
+      },
+      onSyncError: (errMsg) => {
+        console.error('Daily auto-sync error:', errMsg);
+        setAutoSyncError(errMsg);
+      },
+      onSyncSettled: () => {
+        setIsAutoSyncingDaily(false);
+      },
+    });
+  }, [dailyAutoSync, accessToken, activeMonthId, currentBudget.lastSyncedAt, currentBudget.driveFileId]);
 
   // Summaries for all months (for historical comparison chart)
   const allMonthsSummaries = useMemo<MonthlySummary[]>(() => {
@@ -366,7 +396,33 @@ export default function App() {
     });
   };
 
+  const handleResetCurrentMonthCategories = () => {
+    setMonths((prev) => ({
+      ...prev,
+      [activeMonthId]: {
+        ...(prev[activeMonthId] ?? currentBudget),
+        expenseBudgets: { ...INITIAL_EXPENSE_BUDGETS_NOV },
+        incomeBudgets: { ...INITIAL_INCOME_BUDGETS_NOV },
+      },
+    }));
+  };
+
   const handleResetToDefaults = () => {
+    // Save a timestamped backup before destructive reset and prune old backups to the latest 3 (P0-5)
+    try {
+      const backupKey = `hvr_expense_backup_${Date.now()}`;
+      localStorage.setItem(backupKey, JSON.stringify({ months, transactions }));
+      const allBackupKeys = Object.keys(localStorage)
+        .filter((k) => k.startsWith('hvr_expense_backup_'))
+        .sort();
+      while (allBackupKeys.length > 3) {
+        const oldest = allBackupKeys.shift();
+        if (oldest) localStorage.removeItem(oldest);
+      }
+    } catch (e) {
+      console.warn('Could not save reset backup to localStorage:', e);
+    }
+
     setMonths({
       [INITIAL_MONTH_ID]: {
         monthId: INITIAL_MONTH_ID,
@@ -377,6 +433,7 @@ export default function App() {
       },
     });
     setTransactions([]);
+    setActiveMonthId(INITIAL_MONTH_ID);
   };
 
   // Create a new month board explicitly
@@ -419,6 +476,7 @@ export default function App() {
     const normalizedImported = imported.map((t) => ({
       ...t,
       monthId: targetMonthId,
+      weekNumber: calculateWeekNumber(t.date),
     }));
 
     setTransactions((prev) => {
@@ -431,26 +489,79 @@ export default function App() {
   };
 
   const handleImportFromDriveFile = async (file: DriveFileInfo) => {
-    if (!accessToken) return;
-    try {
-      const items = await importTransactionsFromGoogleSheet(
-        accessToken,
-        file.id,
-        activeMonthId
-      );
-      if (items.length > 0) {
-        handleImportTransactions(items, activeMonthId, file.name);
-        setIsDriveModalOpen(false);
-      }
-    } catch (e: any) {
-      console.error('Import error:', e);
+    if (!accessToken) {
+      throw new Error('Please reconnect Google Drive before importing.');
     }
+    const items = await importTransactionsFromGoogleSheet(
+      accessToken,
+      file.id,
+      activeMonthId
+    );
+    if (items.length === 0) {
+      throw new Error(`No valid transactions found in "${file.name}".`);
+    }
+
+    // Group imported Drive transactions by their parsed date's monthId (P0-4)
+    const groupedByMonth = new Map<string, Transaction[]>();
+    for (const item of items) {
+      const mId = getMonthIdFromDate(item.date);
+      const normalizedItem: Transaction = {
+        ...item,
+        monthId: mId,
+        weekNumber: calculateWeekNumber(item.date),
+      };
+      const bucket = groupedByMonth.get(mId) || [];
+      bucket.push(normalizedItem);
+      groupedByMonth.set(mId, bucket);
+    }
+
+    // Ensure every imported month board exists
+    setMonths((prev) => {
+      const next = { ...prev };
+      for (const mId of groupedByMonth.keys()) {
+        if (!next[mId]) {
+          next[mId] = {
+            monthId: mId,
+            monthName: formatMonthIdToName(mId),
+            startBalance: 0,
+            expenseBudgets: { ...currentBudget.expenseBudgets },
+            incomeBudgets: { ...currentBudget.incomeBudgets },
+          };
+        }
+      }
+      return next;
+    });
+
+    // Deduplicate per month and prepend unique transactions
+    setTransactions((prev) => {
+      const newlyAdded: Transaction[] = [];
+      for (const [mId, group] of groupedByMonth.entries()) {
+        const existingInMonth = prev.filter((t) => t.monthId === mId);
+        const { unique } = filterDuplicateTransactions(group, existingInMonth);
+        newlyAdded.push(...unique);
+      }
+      return [...newlyAdded, ...prev];
+    });
+
+    // Switch activeMonthId to the month with the most imported transactions
+    let primaryMonthId = activeMonthId;
+    let maxCount = 0;
+    for (const [mId, group] of groupedByMonth.entries()) {
+      if (group.length > maxCount) {
+        maxCount = group.length;
+        primaryMonthId = mId;
+      }
+    }
+
+    setActiveMonthId(primaryMonthId);
+    setActiveTab('transactions');
+    setIsDriveModalOpen(false);
   };
 
   const openAddModalFromView = (type: TransactionType = 'expense', defaultCat?: string) => {
     setQuickAddType(type);
     setQuickAddCat(defaultCat);
-    setQuickAddDate(new Date().toISOString().slice(0, 10));
+    setQuickAddDate(formatLocalYYYYMMDD());
     setQuickAddDesc('');
     setQuickAddAmount('');
     setIsQuickAddOpen(true);
@@ -785,6 +896,7 @@ export default function App() {
             onRenameCategory={handleRenameCategory}
             onDeleteCategory={handleDeleteCategory}
             onResetToDefaults={handleResetToDefaults}
+            onResetCurrentMonthCategories={handleResetCurrentMonthCategories}
             isDark={isDark}
           />
         )}
@@ -987,13 +1099,19 @@ export default function App() {
         budget={currentBudget}
         currentUser={currentUser}
         accessToken={accessToken}
+        needsGoogleReconnect={needsGoogleReconnect}
+        autoSyncError={autoSyncError}
         onAuthSuccess={(user, token) => {
           setCurrentUser(user);
           setAccessToken(token);
+          setNeedsGoogleReconnect(false);
+          setAutoSyncError(null);
+          autoSyncControllerRef.current.resetCooldown();
         }}
         onAuthLogout={() => {
           setCurrentUser(null);
           setAccessToken(null);
+          setNeedsGoogleReconnect(false);
         }}
         onImportDriveSheet={handleImportFromDriveFile}
         onUpdateBudget={handleUpdateBudget}
