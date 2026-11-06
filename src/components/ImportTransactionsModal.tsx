@@ -105,7 +105,7 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -117,17 +117,23 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
     setIsProcessing(true);
 
     try {
+      const buffer = await file.arrayBuffer();
+      const head = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 8));
+      const isZip =
+        head.length >= 4 && head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04;
+      const oleMagic = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+      const isOle = head.length >= 8 && oleMagic.every((b, i) => head[i] === b);
+
       let csv = '';
-      if (file.name.toLowerCase().endsWith('.csv')) {
-        csv = await file.text();
-      } else {
-        const buffer = await file.arrayBuffer();
+      if (isZip || isOle) {
         const wb = XLSX.read(buffer, { type: 'array', cellDates: true });
         const sheetName =
           wb.SheetNames.find((n) => n.toLowerCase().includes('transaction')) ||
           wb.SheetNames[0];
         const ws = wb.Sheets[sheetName];
         csv = XLSX.utils.sheet_to_csv(ws, { dateNF: 'yyyy-mm-dd' });
+      } else {
+        csv = new TextDecoder('utf-8').decode(buffer);
       }
 
       setRawCsvCache(csv);
@@ -259,7 +265,6 @@ export const ImportTransactionsModal: React.FC<ImportTransactionsModalProps> = (
             <input
               ref={fileInputRef}
               type="file"
-              accept=".csv, .xlsx, .xls"
               onChange={handleFileChange}
               className="hidden"
             />
