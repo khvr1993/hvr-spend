@@ -14,7 +14,6 @@ import {
   ArrowRight,
   Check,
   SlidersHorizontal,
-  FolderPlus,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
@@ -600,70 +599,6 @@ export const QuickEntryHomeView: React.FC<QuickEntryHomeViewProps> = ({
             </button>
           </div>
         </form>
-      </div>
-
-      {/* Monthly Boards Directory */}
-      <div className={`border rounded-lg p-5 sm:p-6 ${surfaceClass}`}>
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
-          <div>
-            <h3 className="text-xs font-medium uppercase tracking-wider">
-              Monthly Boards ({Object.keys(months).length})
-            </h3>
-            <p className={`text-xs ${textMuted} mt-0.5`}>
-              Select another month to view its expenses or create a new monthly board.
-            </p>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => {
-              const sorted = Object.keys(months).sort((a, b) => b.localeCompare(a));
-              const latest = sorted[0] || '2026-11';
-              const [yr, mo] = latest.split('-').map(Number);
-              const nextYr = mo === 12 ? yr + 1 : yr;
-              const nextMo = mo === 12 ? 1 : mo + 1;
-              const nextId = `${nextYr}-${String(nextMo).padStart(2, '0')}`;
-              onCreateMonth(nextId);
-            }}
-            className={`py-2 px-3 rounded-md border border-dashed ${borderClass} text-xs font-medium ${textMuted} hover:text-inherit flex items-center justify-center gap-1.5 cursor-pointer transition-colors shrink-0`}
-          >
-            <FolderPlus className="w-3.5 h-3.5 text-amber-500" />
-            + Create Next Month Board
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-          {Object.keys(months)
-            .sort((a, b) => b.localeCompare(a))
-            .map((mId) => {
-              const isCurrent = mId === activeMonthId;
-              return (
-                <div
-                  key={mId}
-                  onClick={() => {
-                    onSelectMonth(mId);
-                    onNavigateToTab('summary');
-                  }}
-                  className={`px-3.5 py-2.5 rounded-md border text-xs flex items-center justify-between cursor-pointer transition-colors ${
-                    isCurrent
-                      ? `border-amber-500/40 ${subtleSurfaceClass} font-medium`
-                      : `${borderClass} hover:${subtleSurfaceClass}`
-                  }`}
-                >
-                  <span className="flex items-center gap-2 truncate">
-                    <span className="truncate">{months[mId]?.monthName || mId}</span>
-                    {isCurrent && (
-                      <span className="text-[10px] font-mono text-amber-500 shrink-0">Active</span>
-                    )}
-                  </span>
-                  <span className={`text-[11px] font-mono ${textMuted} flex items-center gap-1 shrink-0 ml-2`}>
-                    View
-                    <ArrowRight className="w-3 h-3" />
-                  </span>
-                </div>
-              );
-            })}
-        </div>
       </div>
     </div>
   );

@@ -39,10 +39,8 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
   isDark = true,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [typeFilter, setTypeFilter] = useState<'all' | 'expense' | 'income'>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
-  const [weekFilter, setWeekFilter] = useState<string>('all');
-  const [sortBy, setSortBy] = useState<'date-desc' | 'date-asc' | 'amount-desc' | 'amount-asc'>('date-desc');
+  const [sortBy] = useState<'date-desc' | 'date-asc' | 'amount-desc' | 'amount-asc'>('date-desc');
 
   // Modal states
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -80,9 +78,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
   const filteredTransactions = useMemo(() => {
     return monthTransactions
       .filter((t) => {
-        if (typeFilter !== 'all' && t.type !== typeFilter) return false;
         if (categoryFilter !== 'all' && t.category !== categoryFilter) return false;
-        if (weekFilter !== 'all' && String(t.weekNumber || 1) !== weekFilter) return false;
         if (searchQuery.trim()) {
           const q = searchQuery.toLowerCase();
           const matchDesc = t.description.toLowerCase().includes(q);
@@ -100,7 +96,7 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
         if (sortBy === 'amount-asc') return a.amount - b.amount;
         return 0;
       });
-  }, [monthTransactions, typeFilter, categoryFilter, weekFilter, searchQuery, sortBy]);
+  }, [monthTransactions, categoryFilter, searchQuery, sortBy]);
 
   const totalFilteredExpenses = filteredTransactions
     .filter((t) => t.type === 'expense')
@@ -222,16 +218,6 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
         {/* Filter Selectors */}
         <div className="flex flex-wrap items-center gap-2">
           <select
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value as any)}
-            className={`px-2.5 py-1.5 rounded-md text-xs font-mono border ${borderClass} ${subtleSurfaceClass} focus:outline-none`}
-          >
-            <option value="all">All Types</option>
-            <option value="expense">Expenses</option>
-            <option value="income">Income</option>
-          </select>
-
-          <select
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
             className={`px-2.5 py-1.5 rounded-md text-xs font-mono border ${borderClass} ${subtleSurfaceClass} focus:outline-none max-w-[140px]`}
@@ -242,19 +228,6 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
                 {cat}
               </option>
             ))}
-          </select>
-
-          <select
-            value={weekFilter}
-            onChange={(e) => setWeekFilter(e.target.value)}
-            className={`px-2.5 py-1.5 rounded-md text-xs font-mono border ${borderClass} ${subtleSurfaceClass} focus:outline-none`}
-          >
-            <option value="all">All Weeks</option>
-            <option value="1">Week 1 (1–7)</option>
-            <option value="2">Week 2 (8–14)</option>
-            <option value="3">Week 3 (15–21)</option>
-            <option value="4">Week 4 (22–28)</option>
-            <option value="5">Week 5 (29–31)</option>
           </select>
 
           <button
@@ -320,10 +293,8 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
               <thead>
                 <tr className={`border-b ${borderClass} ${subtleSurfaceClass} ${textMuted} font-medium tracking-wider uppercase text-[10px]`}>
                   <th className="py-2.5 px-6">Date</th>
-                  <th className="py-2.5 px-4">Type</th>
                   <th className="py-2.5 px-4">Category</th>
                   <th className="py-2.5 px-6">Description</th>
-                  <th className="py-2.5 px-4">Week</th>
                   <th className="py-2.5 px-6 text-right">Amount</th>
                   <th className="py-2.5 px-6 text-right">Actions</th>
                 </tr>
@@ -333,16 +304,6 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
                   <tr key={t.id} className={`${rowHover} transition-colors group`}>
                     <td className={`py-3 px-6 font-mono ${textMuted} whitespace-nowrap`}>
                       {t.date}
-                    </td>
-                    <td className="py-3 px-4 whitespace-nowrap">
-                      <span className={`inline-flex items-center gap-1.5 text-[11px] font-mono ${textMuted}`}>
-                        <span
-                          className={`w-1.5 h-1.5 rounded-full ${
-                            t.type === 'expense' ? 'bg-zinc-400' : 'bg-amber-500'
-                          }`}
-                        ></span>
-                        {t.type === 'expense' ? 'Expense' : 'Income'}
-                      </span>
                     </td>
                     <td className="py-3 px-4 font-medium whitespace-nowrap">
                       {t.category}
@@ -356,11 +317,6 @@ export const TransactionsView: React.FC<TransactionsViewProps> = ({
                           {t.notes}
                         </div>
                       )}
-                    </td>
-                    <td className="py-3 px-4 whitespace-nowrap">
-                      <span className={`text-[11px] font-mono px-2 py-0.5 rounded border ${borderClass} ${subtleSurfaceClass} ${textMuted}`}>
-                        W{t.weekNumber || 1}
-                      </span>
                     </td>
                     <td className="py-3 px-6 text-right whitespace-nowrap font-mono font-medium">
                       <span className={t.type === 'income' ? 'text-amber-500' : 'text-inherit'}>

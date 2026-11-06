@@ -2,6 +2,9 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getAuth,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  browserPopupRedirectResolver,
   GoogleAuthProvider,
   onAuthStateChanged,
   signOut,
@@ -9,7 +12,7 @@ import {
 } from 'firebase/auth';
 import * as XLSX from 'xlsx';
 import { MonthlySummary, Transaction, MonthlyBudget } from '../types';
-import { calculateWeeklyMatrix, formatINR, formatDriveFileTitle } from '../utils/expenseCalculations';
+import { calculateWeeklyMatrix, formatDriveFileTitle } from '../utils/expenseCalculations';
 
 // Construct public Firebase Web client configuration at runtime so GitHub's regex scanner does not false-positive on the public web identifier
 const defaultWebApiKey = ['AIzaSy', 'Cjn38cxkXYGBRE1wgBo51AXbS1DYdApXc'].join('');
@@ -41,9 +44,15 @@ export const SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
 ];
 
-const provider = new GoogleAuthProvider();
-for (const scope of SCOPES) {
-  provider.addScope(scope);
+function createGoogleProvider(): GoogleAuthProvider {
+  const provider = new GoogleAuthProvider();
+  for (const scope of SCOPES) {
+    provider.addScope(scope);
+  }
+  provider.setCustomParameters({
+    prompt: 'select_account',
+  });
+  return provider;
 }
 
 // Memory-only cache for access token
@@ -58,6 +67,22 @@ export const initAuth = (
     if (onAuthFailure) onAuthFailure();
     return () => {};
   }
+
+  // Handle redirect sign-in completion if returning from googleSignInRedirect()
+  getRedirectResult(auth, browserPopupRedirectResolver)
+    .then((result) => {
+      if (result && result.user) {
+        const credential = GoogleAuthProvider.credentialFromResult(result);
+        if (credential?.accessToken) {
+          cachedAccessToken = credential.accessToken;
+          if (onAuthSuccess) onAuthSuccess(result.user, cachedAccessToken);
+        }
+      }
+    })
+    .catch((err) => {
+      console.error('Redirect sign-in check error:', err);
+    });
+
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user && cachedAccessToken) {
       if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
@@ -70,14 +95,15 @@ export const initAuth = (
 
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
   if (!auth) {
-    throw new Error('Firebase configuration missing. Configure firebase-applet-config.json or VITE_FIREBASE_* secrets.');
+    throw new Error('Firebase configuration missing.');
   }
   try {
     isSigningIn = true;
-    const result = await signInWithPopup(auth, provider);
+    const provider = createGoogleProvider();
+    const result = await signInWithPopup(auth, provider, browserPopupRedirectResolver);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
-      throw new Error('Failed to retrieve access token from Google sign in');
+      throw new Error('Failed to retrieve access token from Google sign-in.');
     }
     cachedAccessToken = credential.accessToken;
     return { user: result.user, accessToken: cachedAccessToken };
@@ -87,6 +113,15 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
   } finally {
     isSigningIn = false;
   }
+};
+
+export const googleSignInRedirect = async (): Promise<void> => {
+  if (!auth) {
+    throw new Error('Firebase configuration missing.');
+  }
+  isSigningIn = true;
+  const provider = createGoogleProvider();
+  await signInWithRedirect(auth, provider, browserPopupRedirectResolver);
 };
 
 export const getAccessToken = async (): Promise<string | null> => {

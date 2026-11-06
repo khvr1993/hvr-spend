@@ -650,7 +650,7 @@ export default function App() {
                   : `${textMuted} hover:text-inherit`
               }`}
             >
-              Summary Board
+              Summary
             </button>
 
             <button
@@ -664,7 +664,7 @@ export default function App() {
                   : `${textMuted} hover:text-inherit`
               }`}
             >
-              Graphical Dashboard
+              Analytics
             </button>
 
             <button
@@ -709,7 +709,7 @@ export default function App() {
                   : `${textMuted} hover:text-inherit`
               }`}
             >
-              Categories &amp; Targets
+              Setup
             </button>
           </nav>
         </div>

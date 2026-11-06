@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { User } from 'firebase/auth';
 import {
   googleSignIn,
+  googleSignInRedirect,
   logout,
   syncToGoogleDrive,
   generateExcelWorkbookBlob,
@@ -57,6 +58,7 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
 }) => {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [isPopupClosedError, setIsPopupClosedError] = useState(false);
 
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{
@@ -79,6 +81,7 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
   const targetFileTitle = formatDriveFileTitle(summary.monthId);
   const todayStr = new Date().toISOString().slice(0, 10);
   const syncedToday = !isDailySyncDue(budget.lastSyncedAt, todayStr);
+  const currentHostname = typeof window !== 'undefined' ? window.location.hostname : '';
 
   // Surface classes
   const surfaceClass = isDark
@@ -96,14 +99,41 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
   const handleSignIn = async () => {
     setIsLoggingIn(true);
     setAuthError(null);
+    setIsPopupClosedError(false);
     try {
       const res = await googleSignIn();
       if (res) {
         onAuthSuccess(res.user, res.accessToken);
       }
     } catch (err: any) {
-      setAuthError(err?.message || 'Authentication error');
+      const code = String(err?.code || err?.message || '');
+      if (
+        code.includes('popup-closed-by-user') ||
+        code.includes('popup-blocked') ||
+        code.includes('cancelled-popup-request')
+      ) {
+        setIsPopupClosedError(true);
+        setAuthError('Google sign-in popup closed before completing authorization.');
+      } else if (code.includes('unauthorized-domain')) {
+        setIsPopupClosedError(true);
+        setAuthError(
+          `Domain "${currentHostname}" is not yet added to Firebase Authorized Domains.`
+        );
+      } else {
+        setAuthError(err?.message || 'Authentication error');
+      }
     } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleRedirectSignIn = async () => {
+    setIsLoggingIn(true);
+    setAuthError(null);
+    try {
+      await googleSignInRedirect();
+    } catch (err: any) {
+      setAuthError(err?.message || 'Redirect sign-in failed');
       setIsLoggingIn(false);
     }
   };
@@ -235,24 +265,67 @@ export const DriveSyncModal: React.FC<DriveSyncModalProps> = ({
                   Sign Out
                 </button>
               ) : (
-                <button
-                  type="button"
-                  onClick={handleSignIn}
-                  disabled={isLoggingIn}
-                  className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-medium rounded-md transition-colors flex items-center gap-2 cursor-pointer shrink-0"
-                >
-                  {isLoggingIn ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : null}
-                  Connect Google
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleSignIn}
+                    disabled={isLoggingIn}
+                    className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-medium rounded-md transition-colors flex items-center gap-2 cursor-pointer shrink-0"
+                  >
+                    {isLoggingIn ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : null}
+                    Connect Google
+                  </button>
+                </div>
               )}
             </div>
 
             {authError && (
-              <p className="mt-2 text-xs text-amber-500 font-mono">
-                {authError}
-              </p>
+              <div className={`mt-3 p-3 rounded-md border border-amber-500/40 ${surfaceClass} space-y-2.5 text-xs`}>
+                <p className="text-amber-500 font-medium">{authError}</p>
+                {isPopupClosedError && (
+                  <>
+                    <div className={`space-y-1.5 text-[11px] ${textMuted} leading-relaxed`}>
+                      <p>
+                        <strong>1. On the &ldquo;Google hasn&rsquo;t verified this app&rdquo; screen:</strong>{' '}
+                        Do not click the blue <em>&ldquo;Back to safety&rdquo;</em> button (that closes the popup). Instead, click{' '}
+                        <strong>&ldquo;Advanced&rdquo;</strong> (bottom-left) &rarr;{' '}
+                        <strong>&ldquo;Go to app (unsafe)&rdquo;</strong> &rarr; check the Google Drive &amp; Sheets boxes and click <strong>Continue</strong>.
+                      </p>
+                      <p>
+                        <strong>2. Installed Phone App / Mobile Browser:</strong>{' '}
+                        If you are using the installed Android app or mobile browser where popups close automatically, use <strong>Redirect Sign-In</strong> below:
+                      </p>
+                      {currentHostname && currentHostname.endsWith('github.io') && (
+                        <p>
+                          <strong>3. GitHub Pages Domain:</strong> Ensure{' '}
+                          <code className="font-mono text-amber-500">{currentHostname}</code> is added under{' '}
+                          <strong>Firebase Console &rarr; Authentication &rarr; Settings &rarr; Authorized domains</strong>.
+                        </p>
+                      )}
+                    </div>
+                    <div className="pt-1 flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleRedirectSignIn}
+                        disabled={isLoggingIn}
+                        className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-zinc-950 rounded-md text-xs font-medium cursor-pointer"
+                      >
+                        Sign In via Redirect (Mobile / Installed App)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSignIn}
+                        disabled={isLoggingIn}
+                        className={`px-3 py-1.5 rounded-md text-xs font-mono border ${borderClass} ${subtleSurfaceClass} cursor-pointer`}
+                      >
+                        Retry Popup
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
           </div>
 
