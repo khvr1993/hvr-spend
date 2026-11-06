@@ -40,6 +40,7 @@ import { ExpensesByWeekView } from './components/ExpensesByWeekView';
 import { CategoryManagerView } from './components/CategoryManagerView';
 import { DriveSyncModal } from './components/DriveSyncModal';
 import { ImportTransactionsModal } from './components/ImportTransactionsModal';
+import { PWAInstallButton, OfflineIndicator } from './components/PWAInstallButton';
 
 // Icons
 import {
@@ -585,6 +586,8 @@ export default function App() {
                 <span>Sync</span>
               </button>
 
+              <PWAInstallButton isDark={isDark} />
+
               {currentUser && (
                 <button
                   type="button"
@@ -998,6 +1001,9 @@ export default function App() {
         onImportTransactions={handleImportTransactions}
         isDark={isDark}
       />
+
+      {/* Offline Status Banner */}
+      <OfflineIndicator />
     </div>
   );
 }
